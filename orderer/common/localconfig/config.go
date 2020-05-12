@@ -6,6 +6,7 @@ package localconfig
 import (
 	"fmt"
 	"path/filepath"
+
 	"strings"
 	"time"
 
@@ -300,7 +301,7 @@ func Load() (*TopLevel, error) {
 	config.AutomaticEnv()
 	replacer := strings.NewReplacer(".", "_")
 	config.SetEnvKeyReplacer(replacer)
-
+	logger.Debugf("JC==>Load()")
 	if err := config.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("Error reading configuration: %s", err)
 	}

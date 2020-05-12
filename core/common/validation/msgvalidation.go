@@ -81,18 +81,21 @@ func ValidateProposalMessage(signedProp *pb.SignedProposal) (*pb.Proposal, *comm
 	putilsLogger.Debugf("ValidateProposalMessage starts for signed proposal %p", signedProp)
 
 	// extract the Proposal message from signedProp
+	// 从提案中获取Proposal内容
 	prop, err := utils.GetProposal(signedProp.ProposalBytes)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	// 1) look at the ProposalHeader
+	// 从Proposal中获取Header
 	hdr, err := utils.GetHeader(prop.Header)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	// validate the header
+	// 对header进行验证
 	chdr, shdr, err := validateCommonHeader(hdr)
 	if err != nil {
 		return nil, nil, nil, err

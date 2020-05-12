@@ -49,14 +49,14 @@ func addFlags(cmd *cobra.Command) {
 func Cmd(cf *ChaincodeCmdFactory) *cobra.Command {
 	addFlags(chaincodeCmd)
 
-	chaincodeCmd.AddCommand(installCmd(cf))
-	chaincodeCmd.AddCommand(instantiateCmd(cf))
-	chaincodeCmd.AddCommand(invokeCmd(cf))
-	chaincodeCmd.AddCommand(packageCmd(cf, nil))
-	chaincodeCmd.AddCommand(queryCmd(cf))
-	chaincodeCmd.AddCommand(signpackageCmd(cf))
-	chaincodeCmd.AddCommand(upgradeCmd(cf))
-	chaincodeCmd.AddCommand(listCmd(cf))
+	chaincodeCmd.AddCommand(installCmd(cf))			// 执行链码的安装
+	chaincodeCmd.AddCommand(instantiateCmd(cf))		// 链码的实例化
+	chaincodeCmd.AddCommand(invokeCmd(cf))			// 链码的调用，具体调用什么方法要看链码是怎么写的
+	chaincodeCmd.AddCommand(packageCmd(cf, nil))	// 链码的打包
+	chaincodeCmd.AddCommand(queryCmd(cf))			// 对链码数据进行查询，这个只是向指定的Peer节点请求查询数据，不会生成交易最后打包区块的 
+	chaincodeCmd.AddCommand(signpackageCmd(cf))		// 对已打包的链码进行签名操作
+	chaincodeCmd.AddCommand(upgradeCmd(cf))			// 更新链码，之前提到过 -v是指定链码的版本，如果需要对链码进行更新的话，使用这条命令，比较常用
+	chaincodeCmd.AddCommand(listCmd(cf))			// 如果已指定通道的话，则查询已实例化的链码，否则查询当前Peer节点已安装的链码
 
 	return chaincodeCmd
 }

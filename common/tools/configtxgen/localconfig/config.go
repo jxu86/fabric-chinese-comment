@@ -261,7 +261,6 @@ func Load(profile string, configPaths ...string) *Profile {
 	} else {
 		cf.InitViper(config, configName)
 	}
-
 	// For environment variables
 	config.SetEnvPrefix(Prefix)
 	config.AutomaticEnv()

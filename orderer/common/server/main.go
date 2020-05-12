@@ -79,22 +79,24 @@ func Main() {
 		return
 	}
 
-	conf, err := localconfig.Load()
+	conf, err := localconfig.Load() // 读取orderer.yaml配置文件，返回conf数据结构
 	if err != nil {
-		logger.Error("failed to parse config: ", err)
+		logger.Error("failed to parse config===>: ", err)
 		os.Exit(1)
 	}
-	initializeLogging()
-	initializeLocalMsp(conf)
+	initializeLogging()      // 初始化日志
+	initializeLocalMsp(conf) // 初始化本地MSP组件
 
-	prettyPrintStruct(conf)
-	Start(fullCmd, conf)
+	prettyPrintStruct(conf) // 把配置文件打印出来
+	Start(fullCmd, conf)	// 启动排序节点
 }
 
 // Start provides a layer of abstraction for benchmark test
 func Start(cmd string, conf *localconfig.TopLevel) {
-	bootstrapBlock := extractBootstrapBlock(conf)
-	if err := ValidateBootstrapBlock(bootstrapBlock); err != nil {
+	// 读取orderer.block文件
+	bootstrapBlock := extractBootstrapBlock(conf)	
+	// 校验orderer.block文件
+	if err := ValidateBootstrapBlock(bootstrapBlock); err != nil {	
 		logger.Panicf("Failed validating bootstrap block: %v", err)
 	}
 
@@ -127,7 +129,9 @@ func Start(cmd string, conf *localconfig.TopLevel) {
 	logObserver := floggingmetrics.NewObserver(metricsProvider)
 	flogging.Global.SetObserver(logObserver)
 
+	// 通过TLS相关的配置信息，初始化TLS认证需要的的安全服务器配置项
 	serverConfig := initializeServerConfig(conf, metricsProvider)
+	// 初始化grpc服务，传入配置文件与TLS配置信息，通过TLS配置信息来决定是否启用tls验证
 	grpcServer := initializeGrpcServer(conf, serverConfig)
 	caSupport := &comm.CredentialSupport{
 		AppRootCAsByChain:           make(map[string]comm.CertificateBundle),
@@ -137,6 +141,7 @@ func Start(cmd string, conf *localconfig.TopLevel) {
 
 	clusterServerConfig := serverConfig
 	clusterGRPCServer := grpcServer
+	logger.Debugf("JC==>clusterType==>", clusterType)
 	if clusterType {
 		clusterServerConfig, clusterGRPCServer = configureClusterListener(conf, serverConfig, grpcServer, ioutil.ReadFile)
 	}

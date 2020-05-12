@@ -533,6 +533,7 @@ func CreateUpgradeProposalFromCDS(
 
 // createProposalFromCDS returns a deploy or upgrade proposal given a
 // serialized identity and a ChaincodeDeploymentSpec
+// 传入的参数说明一下：chainID为空，msg，creator由之前的方法传入，propType为install，args为空
 func createProposalFromCDS(chainID string, msg proto.Message, creator []byte, propType string, args ...[]byte) (*peer.Proposal, string, error) {
 	// in the new mode, cds will be nil, "deploy" and "upgrade" are instantiates.
 	var ccinp *peer.ChaincodeInput
@@ -545,8 +546,10 @@ func createProposalFromCDS(chainID string, msg proto.Message, creator []byte, pr
 		}
 	}
 	switch propType {
+	// 这里就判断propTypre类型，如果是deploy,或者是upgrade需要链码已经实例化完成
 	case "deploy":
 		fallthrough
+		// 如果是deploy不跳出代码块，继续执行upgrade中的代码
 	case "upgrade":
 		cds, ok := msg.(*peer.ChaincodeDeploymentSpec)
 		if !ok || cds == nil {
@@ -554,13 +557,14 @@ func createProposalFromCDS(chainID string, msg proto.Message, creator []byte, pr
 		}
 		Args := [][]byte{[]byte(propType), []byte(chainID), b}
 		Args = append(Args, args...)
-
+		// 与安装链码相同，都需要定义一个ChaincodeInput结构体，该结构体保存链码的基本信息
 		ccinp = &peer.ChaincodeInput{Args: Args}
 	case "install":
 		ccinp = &peer.ChaincodeInput{Args: [][]byte{[]byte(propType), b}}
 	}
 
 	// wrap the deployment in an invocation spec to lscc...
+	// 安装链码需要使用到生命周期系统链码，所以这里定义了一个lsccSpce，注意这里的ChaincodeInvocationSpec在下面使用到
 	lsccSpec := &peer.ChaincodeInvocationSpec{
 		ChaincodeSpec: &peer.ChaincodeSpec{
 			Type:        peer.ChaincodeSpec_GOLANG,
@@ -570,6 +574,7 @@ func createProposalFromCDS(chainID string, msg proto.Message, creator []byte, pr
 	}
 
 	// ...and get the proposal for it
+	// 根据ChaincodeInvocationSpec创建Proposal
 	return CreateProposalFromCIS(common.HeaderType_ENDORSER_TRANSACTION, chainID, lsccSpec, creator)
 }
 

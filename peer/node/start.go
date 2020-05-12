@@ -127,17 +127,20 @@ var nodeStartCmd = &cobra.Command{
 }
 
 func serve(args []string) error {
+	logger.Debugf("JC=>test==>serve")
 	// currently the peer only works with the standard MSP
 	// because in certain scenarios the MSP has to make sure
 	// that from a single credential you only have a single 'identity'.
 	// Idemix does not support this *YET* but it can be easily
 	// fixed to support it. For now, we just make sure that
 	// the peer only comes up with the standard MSP
+	// 首先获取MSP的类型，msp指的是成员关系服务提供者，相当于许可证
 	mspType := mgmt.GetLocalMSP().GetType()
+	// 如果MSP的类型不是FABRIC，返回错误信息
 	if mspType != msp.FABRIC {
 		panic("Unsupported msp type " + msp.ProviderTypeToString(mspType))
 	}
-
+	logger.Debugf("JC=>test==>mspType:", mspType)
 	// Trace RPCs with the golang.org/x/net/trace package. This was moved out of
 	// the deliver service connection factory as it has process wide implications
 	// and was racy with respect to initialization of gRPC clients and servers.
@@ -147,23 +150,25 @@ func serve(args []string) error {
 
 	//startup aclmgmt with default ACL providers (resource based and default 1.0 policies based).
 	//Users can pass in their own ACLProvider to RegisterACLProvider (currently unit tests do this)
+	// 创建ACL提供者，access control list访问控制列表
 	aclProvider := aclmgmt.NewACLProvider(
 		aclmgmt.ResourceGetter(peer.GetStableChannelConfig),
 	)
-
+	// 平台注册，可以使用的语言类型，最后一个car不太理解，可能和官方的一个例子有关
 	pr := platforms.NewRegistry(
 		&golang.Platform{},
 		&node.Platform{},
 		&java.Platform{},
 		&car.Platform{},
 	)
-
+	// 定义一个用于部署链码的Provider结构体
 	deployedCCInfoProvider := &lscc.DeployedCCInfoProvider{}
 
 	identityDeserializerFactory := func(chainID string) msp.IdentityDeserializer {
+		// 获取通道管理者
 		return mgmt.GetManagerForChain(chainID)
 	}
-
+	// 相当于配置Peer节点的运行环境了，主要就是保存Peer节点的IP地址，端口，证书等相关基本信息
 	opsSystem := newOperationsSystem()
 	err := opsSystem.Start()
 	if err != nil {
@@ -172,55 +177,61 @@ func serve(args []string) error {
 	defer opsSystem.Stop()
 
 	metricsProvider := opsSystem.Provider
+	// 创建观察者，对Peer节点进行记录
 	logObserver := floggingmetrics.NewObserver(metricsProvider)
 	flogging.Global.SetObserver(logObserver)
-
+	// 创建成员关系信息Provider，简单来说就是保存其他Peer节点的信息，以便通信等等
 	membershipInfoProvider := privdata.NewMembershipInfoProvider(createSelfSignedData(), identityDeserializerFactory)
 	//initialize resource management exit
+	// 账本管理器初始化，主要就是之前所定义的一些属性
 	ledgermgmt.Initialize(
 		&ledgermgmt.Initializer{
-			CustomTxProcessors:            peer.ConfigTxProcessors,
-			PlatformRegistry:              pr,
-			DeployedChaincodeInfoProvider: deployedCCInfoProvider,
-			MembershipInfoProvider:        membershipInfoProvider,
-			MetricsProvider:               metricsProvider,
-			HealthCheckRegistry:           opsSystem,
+			CustomTxProcessors:            peer.ConfigTxProcessors, // 与Tx处理相关
+			PlatformRegistry:              pr,                      // 之前定义的所使用的语言
+			DeployedChaincodeInfoProvider: deployedCCInfoProvider,  // 与链码相关
+			MembershipInfoProvider:        membershipInfoProvider,  // 与Peer节点交互相关
+			MetricsProvider:               metricsProvider,         // 这个不太清楚，与Peer节点的属性相? todo
+			HealthCheckRegistry:           opsSystem,               // 健康检查
 		},
 	)
 
 	// Parameter overrides must be processed before any parameters are
 	// cached. Failures to cache cause the server to terminate immediately.
+	// 判断是否处于开发模式下
 	if chaincodeDevMode {
 		logger.Info("Running in chaincode development mode")
 		logger.Info("Disable loading validity system chaincode")
 
 		viper.Set("chaincode.mode", chaincode.DevModeUserRunsChaincode)
 	}
-
+	// 里面有两个方法，分别是获取本地地址与获取当前Peer节点实例地址，将地址进行缓存
 	if err := peer.CacheConfiguration(); err != nil {
 		return err
 	}
-
+	// 获取当前Peer节点实例地址，如果没有进行缓存，则会执行上一步的CacheConfiguration()方法
 	peerEndpoint, err := peer.GetPeerEndpoint()
 	if err != nil {
 		err = fmt.Errorf("Failed to get Peer Endpoint: %s", err)
 		return err
 	}
-
+	// 简单的字符串操作，获取Host
 	peerHost, _, err := net.SplitHostPort(peerEndpoint.Address)
 	if err != nil {
 		return fmt.Errorf("peer address is not in the format of host:port: %v", err)
 	}
-
+	// 获取监听地址，该属性在opsSystem中定义过
 	listenAddr := viper.GetString("peer.listenAddress")
+	// 返回当前Peer节点的gRPC服务器配置,该方法主要就是设置TLS与心跳信息，在/core/peer/config.go文件中第128行
 	serverConfig, err := peer.GetServerConfig()
 	if err != nil {
 		logger.Fatalf("Error loading secure config for peer (%s)", err)
 	}
-
+	// 设置gRPC最大并发 grpcMaxConcurrency=2500
 	throttle := comm.NewThrottle(grpcMaxConcurrency)
+	// 设置日志信息
 	serverConfig.Logger = flogging.MustGetLogger("core.comm").With("server", "PeerServer")
 	serverConfig.MetricsProvider = metricsProvider
+	// 设置拦截器
 	serverConfig.UnaryInterceptors = append(
 		serverConfig.UnaryInterceptors,
 		grpcmetrics.UnaryServerInterceptor(grpcmetrics.NewUnaryMetrics(metricsProvider)),
@@ -233,12 +244,12 @@ func serve(args []string) error {
 		grpclogging.StreamServerInterceptor(flogging.MustGetLogger("comm.grpc.server").Zap()),
 		throttle.StreamServerInterceptor,
 	)
-
+	// 到这里创建了Peer节点的gRPC服务器，将之前的监听地址与服务器配置传了进去
 	peerServer, err := peer.NewPeerServer(listenAddr, serverConfig)
 	if err != nil {
 		logger.Fatalf("Failed to create peer server (%s)", err)
 	}
-
+	// TLS的相关设置
 	if serverConfig.SecOpts.UseTLS {
 		logger.Info("Starting peer with TLS enabled")
 		// set up credential support
@@ -258,27 +269,33 @@ func serve(args []string) error {
 	}
 
 	mutualTLS := serverConfig.SecOpts.UseTLS && serverConfig.SecOpts.RequireClientCert
+	// 策略检查Provider，看传入的参数就比较清楚了，Envelope，通道ID，环境变量
 	policyCheckerProvider := func(resourceName string) deliver.PolicyCheckerFunc {
 		return func(env *cb.Envelope, channelID string) error {
 			return aclProvider.CheckACL(resourceName, channelID, env)
 		}
 	}
-
+	// 创建了另一个服务器,与上面的权限设置相关，用于交付与过滤区块的事件服务器
 	abServer := peer.NewDeliverEventsServer(mutualTLS, policyCheckerProvider, &peer.DeliverChainManager{}, metricsProvider)
+	// 将之前创建的gRPC服务器与用于交付与过滤区块的事件服务器注册到这里
 	pb.RegisterDeliverServer(peerServer.Server(), abServer)
 
 	// Initialize chaincode service
+	// 启动与链码相关的服务器，看传入的值  Peer节点的主机名，访问控制列表Provider,pr是之前提到与语言相关的，以及之前的运行环境
+	// 主要完成三个操作：1.设置本地链码安装路径，2.创建自签名CA，3，启动链码gRPC监听服务
 	chaincodeSupport, ccp, sccp, packageProvider := startChaincodeServer(peerHost, aclProvider, pr, opsSystem)
 
 	logger.Debugf("Running peer")
 
 	// Start the Admin server
+	// 启动管理员服务，这个不太懂干嘛的
 	startAdminServer(listenAddr, peerServer.Server(), metricsProvider)
 
 	privDataDist := func(channel string, txID string, privateData *transientstore.TxPvtReadWriteSetWithConfigInfo, blkHt uint64) error {
+		// 看这个方法是分发私有数据到其他节点
 		return service.GetGossipService().DistributePrivateData(channel, txID, privateData, blkHt)
 	}
-
+	// 获取本地的已签名的身份信息，主要是看当前节点具有的功能，比如背书，验证
 	signingIdentity := mgmt.GetLocalSigningIdentityOrPanic()
 	serializedIdentity, err := signingIdentity.Serialize()
 	if err != nil {
@@ -289,6 +306,7 @@ func serve(args []string) error {
 	if err = viperutil.EnhancedExactUnmarshalKey("peer.handlers", &libConf); err != nil {
 		return errors.WithMessage(err, "could not load YAML config")
 	}
+	//创建一个Registry实例，将上面的配置注册到这里
 	reg := library.InitRegistry(libConf)
 
 	authFilters := reg.Lookup(library.Auth).([]authHandler.Filter)
@@ -313,10 +331,11 @@ func serve(args []string) error {
 	})
 	endorserSupport.PluginEndorser = pluginEndorser
 	serverEndorser := endorser.NewEndorserServer(privDataDist, endorserSupport, pr, metricsProvider)
-
+	// 创建通道策略管理者，比如哪些节点或用户具有可读，可写，可操作的权限，都是由它管理
 	policyMgr := peer.NewChannelPolicyManagerGetter()
 
 	// Initialize gossip component
+	// 创建用于广播的服务，就是区块链中用于向其他节点发送消息的服务
 	err = initGossipService(policyMgr, metricsProvider, peerServer, serializedIdentity, peerEndpoint.Address)
 	if err != nil {
 		return err
@@ -333,53 +352,65 @@ func serve(args []string) error {
 	// initialize system chaincodes
 
 	// deploy system chaincodes
+	// 这一行代码就是将系统链码部署上去
 	sccp.DeploySysCCs("", ccp)
 	logger.Infof("Deployed system chaincodes")
 
 	installedCCs := func() ([]ccdef.InstalledChaincode, error) {
+		// 查看已经安装的链码
 		return packageProvider.ListInstalledChaincodes()
 	}
+	// 与链码的生命周期相关
 	lifecycle, err := cc.NewLifeCycle(cc.Enumerate(installedCCs))
 	if err != nil {
 		logger.Panicf("Failed creating lifecycle: +%v", err)
 	}
+	// 处理链码的元数据更新，由其他节点广播
 	onUpdate := cc.HandleMetadataUpdate(func(channel string, chaincodes ccdef.MetadataSet) {
 		service.GetGossipService().UpdateChaincodes(chaincodes.AsChaincodes(), gossipcommon.ChainID(channel))
 	})
+	// 添加监听器监听链码元数据更新
 	lifecycle.AddListener(onUpdate)
 
 	// this brings up all the channels
+	// 与通道的初始化相关的内容
 	peer.Initialize(func(cid string) {
 		logger.Debugf("Deploying system CC, for channel <%s>", cid)
 		sccp.DeploySysCCs(cid, ccp)
+		// 获取通道的描述信息，就是通道的基本属性
 		sub, err := lifecycle.NewChannelSubscription(cid, cc.QueryCreatorFunc(func() (cc.Query, error) {
+			// 根据通道ID获取账本的查询执行器
 			return peer.GetLedger(cid).NewQueryExecutor()
 		}))
 		if err != nil {
 			logger.Panicf("Failed subscribing to chaincode lifecycle updates")
 		}
+		// 为通道注册监听器
 		cceventmgmt.GetMgr().Register(cid, sub)
 	}, ccp, sccp, txvalidator.MapBasedPluginMapper(validationPluginsByName),
 		pr, deployedCCInfoProvider, membershipInfoProvider, metricsProvider)
-
+	// 当前节点状态改变后是否可以被发现
 	if viper.GetBool("peer.discovery.enabled") {
 		registerDiscoveryService(peerServer, policyMgr, lifecycle)
 	}
-
+	// 获取Peer节点加入的网络ID
 	networkID := viper.GetString("peer.networkId")
 
 	logger.Infof("Starting peer with ID=[%s], network ID=[%s], address=[%s]", peerEndpoint.Id, networkID, peerEndpoint.Address)
 
 	// Get configuration before starting go routines to avoid
 	// racing in tests
+	// 查看是否已经定义了配置文件
 	profileEnabled := viper.GetBool("peer.profile.enabled")
 	profileListenAddress := viper.GetString("peer.profile.listenAddress")
 
 	// Start the grpc server. Done in a goroutine so we can deploy the
 	// genesis block if needed.
+	// 创建进程启动gRPC服务器
 	serve := make(chan error)
 
 	// Start profiling http endpoint if enabled
+	// 如果已经定义了配置文件，则启动监听服务
 	if profileEnabled {
 		go func() {
 			logger.Infof("Starting profiling server with listenAddress = %s", profileListenAddress)
@@ -388,7 +419,7 @@ func serve(args []string) error {
 			}
 		}()
 	}
-
+	// 开始处理接收到的消息了
 	go handleSignals(addPlatformSignals(map[os.Signal]func(){
 		syscall.SIGINT:  func() { serve <- nil },
 		syscall.SIGTERM: func() { serve <- nil },
@@ -416,6 +447,7 @@ func serve(args []string) error {
 	// start the peer server
 	auth := authHandler.ChainFilters(serverEndorser, authFilters...)
 	// Register the Endorser server
+	// 设置完之后注册背书服务
 	pb.RegisterEndorserServer(peerServer.Server(), auth)
 
 	go func() {
@@ -427,6 +459,7 @@ func serve(args []string) error {
 	}()
 
 	// Block until grpc server exits
+	// 阻塞在这里，除非gRPC服务停止
 	return <-serve
 }
 

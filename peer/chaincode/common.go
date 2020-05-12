@@ -49,18 +49,21 @@ func checkSpec(spec *pb.ChaincodeSpec) error {
 // getChaincodeDeploymentSpec get chaincode deployment spec given the chaincode spec
 func getChaincodeDeploymentSpec(spec *pb.ChaincodeSpec, crtPkg bool) (*pb.ChaincodeDeploymentSpec, error) {
 	var codePackageBytes []byte
+	// 首先判断是否当前Fabric网络处于开发模式，如果不是的话进入这里
 	if chaincode.IsDevMode() == false && crtPkg {
 		var err error
+		// 然后对之前创建的链码标准数据结构进行验证，验证是否为空，链码类型路径等信息
 		if err = checkSpec(spec); err != nil {
 			return nil, err
 		}
-
+		// #获取链码信息的有效载荷
 		codePackageBytes, err = container.GetChaincodePackageBytes(platformRegistry, spec)
 		if err != nil {
 			err = errors.WithMessage(err, "error getting chaincode package bytes")
 			return nil, err
 		}
 	}
+	// 最后封装为ChaincodeDeploymentSpec，这里如果Fabric网络处于开发模式下，codePackageBytes为空
 	chaincodeDeploymentSpec := &pb.ChaincodeDeploymentSpec{ChaincodeSpec: spec, CodePackage: codePackageBytes}
 	return chaincodeDeploymentSpec, nil
 }
@@ -68,6 +71,7 @@ func getChaincodeDeploymentSpec(spec *pb.ChaincodeSpec, crtPkg bool) (*pb.Chainc
 // getChaincodeSpec get chaincode spec from the cli cmd pramameters
 func getChaincodeSpec(cmd *cobra.Command) (*pb.ChaincodeSpec, error) {
 	spec := &pb.ChaincodeSpec{}
+	// 检查由用户输入的命令中的参数信息，比如格式，是否有没有定义过的参数等等
 	if err := checkChaincodeCmdParams(cmd); err != nil {
 		// unset usage silence because it's a command line usage error
 		cmd.SilenceUsage = false
@@ -75,12 +79,14 @@ func getChaincodeSpec(cmd *cobra.Command) (*pb.ChaincodeSpec, error) {
 	}
 
 	// Build the spec
+	// 定义一个链码输入参数结构
 	input := &pb.ChaincodeInput{}
 	if err := json.Unmarshal([]byte(chaincodeCtorJSON), &input); err != nil {
 		return spec, errors.Wrap(err, "chaincode argument error")
 	}
 
 	chaincodeLang = strings.ToUpper(chaincodeLang)
+	// 最后封装为ChaincodeSpec结构体返回 
 	spec = &pb.ChaincodeSpec{
 		Type:        pb.ChaincodeSpec_Type(pb.ChaincodeSpec_Type_value[chaincodeLang]),
 		ChaincodeId: &pb.ChaincodeID{Path: chaincodePath, Name: chaincodeName, Version: chaincodeVersion},
@@ -333,11 +339,11 @@ func validatePeerConnectionParameters(cmdName string) error {
 
 // ChaincodeCmdFactory holds the clients used by ChaincodeCmd
 type ChaincodeCmdFactory struct {
-	EndorserClients []pb.EndorserClient
-	DeliverClients  []api.PeerDeliverClient
-	Certificate     tls.Certificate
-	Signer          msp.SigningIdentity
-	BroadcastClient common.BroadcastClient
+	EndorserClients []pb.EndorserClient			// 用于向背书节点发送消息
+	DeliverClients  []api.PeerDeliverClient 	// 用于与Order节点通信
+	Certificate     tls.Certificate				// TLS证书相关
+	Signer          msp.SigningIdentity			// 用于消息的签名
+	BroadcastClient common.BroadcastClient		// 用于广播消息
 }
 
 // InitCmdFactory init the ChaincodeCmdFactory with default clients

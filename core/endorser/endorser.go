@@ -121,10 +121,10 @@ type validateResult struct {
 func NewEndorserServer(privDist privateDataDistributor, s Support, pr *platforms.Registry, metricsProv metrics.Provider) *Endorser {
 	e := &Endorser{
 		distributePrivateData: privDist,
-		s:                     s,
-		PlatformRegistry:      pr,
-		PvtRWSetAssembler:     &rwSetAssembler{},
-		Metrics:               NewEndorserMetrics(metricsProv),
+		s:                 s,
+		PlatformRegistry:  pr,
+		PvtRWSetAssembler: &rwSetAssembler{},
+		Metrics:           NewEndorserMetrics(metricsProv),
 	}
 	return e
 }
@@ -143,6 +143,7 @@ func (e *Endorser) callChaincode(txParams *ccprovider.TransactionParams, version
 	var ccevent *pb.ChaincodeEvent
 
 	// is this a system chaincode
+	// 执行链码，如果是用户链码具体怎么执行的要看用户写的链码逻辑，执行完毕后返回响应信息与链码事件
 	res, ccevent, err = e.s.Execute(txParams, txParams.ChannelID, cid.Name, version, txParams.TxID, txParams.SignedProp, txParams.Proposal, input)
 	if err != nil {
 		return nil, nil, err
@@ -151,6 +152,7 @@ func (e *Endorser) callChaincode(txParams *ccprovider.TransactionParams, version
 	// per doc anything < 400 can be sent as TX.
 	// fabric errors will always be >= 400 (ie, unambiguous errors )
 	// "lscc" will respond with status 200 or 500 (ie, unambiguous OK or ERROR)
+	// 状态常量一共有三个：OK = 200 ERRORTHRESHOLD = 400 ERROR = 500 大于等于400就是错误信息或者被背书节点拒绝。
 	if res.Status >= shim.ERRORTHRESHOLD {
 		return res, nil, nil
 	}
@@ -163,7 +165,9 @@ func (e *Endorser) callChaincode(txParams *ccprovider.TransactionParams, version
 	//
 	// NOTE that if there's an error all simulation, including the chaincode
 	// table changes in lscc will be thrown away
+	// 判断调用的链码是否为lscc,如果是lscc判断传入的参数是否大于等于3，并且调用的方法是否为deploy或者upgrade，如果是用户链码到这是方法就结束了。
 	if cid.Name == "lscc" && len(input.Args) >= 3 && (string(input.Args[0]) == "deploy" || string(input.Args[0]) == "upgrade") {
+		// 获取链码部署的基本结构,deploy与upgrade都需要对链码进行部署
 		userCDS, err := putils.GetChaincodeDeploymentSpec(input.Args[2], e.PlatformRegistry)
 		if err != nil {
 			return nil, nil, err
@@ -179,7 +183,7 @@ func (e *Endorser) callChaincode(txParams *ccprovider.TransactionParams, version
 		if e.s.IsSysCC(cds.ChaincodeSpec.ChaincodeId.Name) {
 			return nil, nil, errors.Errorf("attempting to deploy a system chaincode %s/%s", cds.ChaincodeSpec.ChaincodeId.Name, txParams.ChannelID)
 		}
-
+		// 执行链码的Init,具体如何执行的这里就不再看了,不然内容更多了
 		_, _, err = e.s.ExecuteLegacyInit(txParams, txParams.ChannelID, cds.ChaincodeSpec.ChaincodeId.Name, cds.ChaincodeSpec.ChaincodeId.Version, txParams.TxID, txParams.SignedProp, txParams.Proposal, cds)
 		if err != nil {
 			// increment the failure to indicate instantion/upgrade failures
@@ -216,6 +220,7 @@ func (e *Endorser) SimulateProposal(txParams *ccprovider.TransactionParams, cid 
 	// we do expect the payload to be a ChaincodeInvocationSpec
 	// if we are supporting other payloads in future, this be glaringly point
 	// as something that should change
+	// 获取链码调用的细节
 	cis, err := putils.GetChaincodeInvocationSpec(txParams.Proposal)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -224,26 +229,30 @@ func (e *Endorser) SimulateProposal(txParams *ccprovider.TransactionParams, cid 
 	var cdLedger ccprovider.ChaincodeDefinition
 	var version string
 
-	if !e.s.IsSysCC(cid.Name) {
+	if !e.s.IsSysCC(cid.Name) { // 不是系统链码
+		// 获取链码的标准数据结构
 		cdLedger, err = e.s.GetChaincodeDefinition(cid.Name, txParams.TXSimulator)
 		if err != nil {
 			return nil, nil, nil, nil, errors.WithMessage(err, fmt.Sprintf("make sure the chaincode %s has been successfully instantiated and try again", cid.Name))
 		}
+		// 获取用户链码版本
 		version = cdLedger.CCVersion()
-
+		// 检查链码实例化策略
 		err = e.s.CheckInstantiationPolicy(cid.Name, version, cdLedger)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
 	} else {
+		// 如果调用的是系统链码，仅仅获取系统链码的版本
 		version = util.GetSysCCVersion()
 	}
 
 	// ---3. execute the proposal and get simulation results
-	var simResult *ledger.TxSimulationResults
-	var pubSimResBytes []byte
-	var res *pb.Response
-	var ccevent *pb.ChaincodeEvent
+	var simResult *ledger.TxSimulationResults	// 定义一个Tx模拟结果集
+	var pubSimResBytes []byte					// 一个byte数组，保存public的模拟响应结果
+	var res *pb.Response						// 响应信息
+	var ccevent *pb.ChaincodeEvent				// 链码事件
+	// 执行链码进行模拟
 	res, ccevent, err = e.callChaincode(txParams, version, cis.ChaincodeSpec.Input, cid)
 	if err != nil {
 		endorserLogger.Errorf("[%s][%s] failed to invoke chaincode %s, error: %+v", txParams.ChannelID, shorttxid(txParams.TxID), cid, err)
@@ -251,11 +260,12 @@ func (e *Endorser) SimulateProposal(txParams *ccprovider.TransactionParams, cid 
 	}
 
 	if txParams.TXSimulator != nil {
+		// GetTxSimulationResults()获取Tx模拟结果集
 		if simResult, err = txParams.TXSimulator.GetTxSimulationResults(); err != nil {
 			txParams.TXSimulator.Done()
 			return nil, nil, nil, nil, err
 		}
-
+		// 之前提到Tx模拟结果集中不仅仅只有公共读写集，还有私有的读写集,接下来判断私有的读写集是否为空
 		if simResult.PvtSimulationResults != nil {
 			if cid.Name == "lscc" {
 				// TODO: remove once we can store collection configuration outside of LSCC
@@ -348,6 +358,7 @@ func (e *Endorser) endorseProposal(_ context.Context, chainID string, txid strin
 func (e *Endorser) preProcess(signedProp *pb.SignedProposal) (*validateResult, error) {
 	vr := &validateResult{}
 	// at first, we check whether the message is valid
+	// 验证信息是否有效
 	prop, hdr, hdrExt, err := validation.ValidateProposalMessage(signedProp)
 
 	if err != nil {
@@ -355,13 +366,13 @@ func (e *Endorser) preProcess(signedProp *pb.SignedProposal) (*validateResult, e
 		vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
 		return vr, err
 	}
-
+	// 从提案的Header中获取通道Header信息
 	chdr, err := putils.UnmarshalChannelHeader(hdr.ChannelHeader)
 	if err != nil {
 		vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
 		return vr, err
 	}
-
+	//获取签名域的Header
 	shdr, err := putils.GetSignatureHeader(hdr.SignatureHeader)
 	if err != nil {
 		vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
@@ -422,20 +433,26 @@ func (e *Endorser) preProcess(signedProp *pb.SignedProposal) (*validateResult, e
 // ProcessProposal process the Proposal
 func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedProposal) (*pb.ProposalResponse, error) {
 	// start time for computing elapsed time metric for successfully endorsed proposals
+	// 首先获取Peer节点处理提案开始的时间
 	startTime := time.Now()
+	// Peer节点接收到的提案数+1
 	e.Metrics.ProposalsReceived.Add(1)
-
+	// 从上下文中获取发起提案的地址
 	addr := util.ExtractRemoteAddress(ctx)
+	// 日志输出
 	endorserLogger.Debug("Entering: request from", addr)
 
 	// variables to capture proposal duration metric
+	// 这个不是链码ID，是通道ID
 	var chainID string
 	var hdrExt *pb.ChaincodeHeaderExtension
 	var success bool
+	// 这个会在方法结束的时候调用
 	defer func() {
 		// capture proposal duration metric. hdrExt == nil indicates early failure
 		// where we don't capture latency metric. But the ProposalValidationFailed
 		// counter metric should shed light on those failures.
+		// 判断chaincodeHeaderExtension是否为空，如果为空的话提案验证失败
 		if hdrExt != nil {
 			meterLabels := []string{
 				"channel", chainID,
@@ -449,6 +466,7 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 	}()
 
 	// 0 -- check and validate
+	// 到了第一个重要的方法，对已签名的提案进行预处理，点进行看一下
 	vr, err := e.preProcess(signedProp)
 	if err != nil {
 		resp := vr.resp
@@ -460,9 +478,13 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 	// obtaining once the tx simulator for this proposal. This will be nil
 	// for chainless proposals
 	// Also obtain a history query executor for history queries, since tx simulator does not cover history
+	// 这里定义了一个Tx模拟器，用于后面的模拟交易过程,如果通道Id为空，那么TxSimulator也是空
 	var txsim ledger.TxSimulator
+	// 定义一个历史记录查询器
 	var historyQueryExecutor ledger.HistoryQueryExecutor
+	// 判断是否需要Tx模拟
 	if acquireTxSimulator(chainID, vr.hdrExt.ChaincodeId) {
+		// 根据通道ID获取Tx模拟器
 		if txsim, err = e.s.GetTxSimulator(chainID, txid); err != nil {
 			return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
 		}
@@ -475,12 +497,12 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 		// txsim.Done() more than once does not cause any issue. If the txsim is already
 		// released, the following txsim.Done() simply returns.
 		defer txsim.Done()
-
+		// 获取历史记录查询器
 		if historyQueryExecutor, err = e.s.GetHistoryQueryExecutor(chainID); err != nil {
 			return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
 		}
 	}
-
+	// 定义一个交易参数结构体，用于下面的方法,里面的字段之前都有说过
 	txParams := &ccprovider.TransactionParams{
 		ChannelID:            chainID,
 		TxID:                 txid,
@@ -497,6 +519,7 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 	//       to validate the supplied action before endorsing it
 
 	// 1 -- simulate
+	// 对交易进行模拟
 	cd, res, simulationResult, ccevent, err := e.SimulateProposal(txParams, hdrExt.ChaincodeId)
 	if err != nil {
 		return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
@@ -529,6 +552,7 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 		pResp = &pb.ProposalResponse{Response: res}
 	} else {
 		// Note: To endorseProposal(), we pass the released txsim. Hence, an error would occur if we try to use this txsim
+		// 开始背书
 		pResp, err = e.endorseProposal(ctx, chainID, txid, signedProp, prop, res, simulationResult, ccevent, hdrExt.PayloadVisibility, hdrExt.ChaincodeId, txsim, cd)
 
 		// if error, capture endorsement failure metric
@@ -567,6 +591,7 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 // determine whether or not a transaction simulator should be
 // obtained for a proposal.
 func acquireTxSimulator(chainID string, ccid *pb.ChaincodeID) bool {
+	// 如果通道ID为空,就说明不需要进行Tx的模拟
 	if chainID == "" {
 		return false
 	}
@@ -574,6 +599,7 @@ func acquireTxSimulator(chainID string, ccid *pb.ChaincodeID) bool {
 	// ¯\_(ツ)_/¯ locking.
 	// Don't get a simulator for the query and config system chaincode.
 	// These don't need the simulator and its read lock results in deadlocks.
+	// 通道ID不为空，则判断链码的类型，如果是qscc(查询系统链码),cscc(配置系统链码)，则不需要进行Tx模拟
 	switch ccid.Name {
 	case "qscc", "cscc":
 		return false
