@@ -205,6 +205,7 @@ func (vmc *VMController) Process(vmtype string, req VMCReq) error {
 
 	vmc.lockContainer(id)
 	defer vmc.unlockContainer(id)
+	// 启动虚拟机
 	return req.Do(v)
 }
 

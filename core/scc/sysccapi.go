@@ -174,7 +174,7 @@ func deploySysCC(chainID string, ccprov ccprovider.ChaincodeProvider, syscc Self
 		Name:    chaincodeDeploymentSpec.ChaincodeSpec.ChaincodeId.Name,
 		Version: version,
 	}
-
+	// 定位到fabric/core/chaincode/chaincode_support.go/ExecuteLegacyInit
 	resp, _, err := ccprov.ExecuteLegacyInit(txParams, cccid, chaincodeDeploymentSpec)
 	if err == nil && resp.Status != shim.OK {
 		err = errors.New(resp.Message)

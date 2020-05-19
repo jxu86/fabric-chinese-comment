@@ -126,7 +126,7 @@ func (cs *ChaincodeSupport) LaunchInit(ccci *ccprovider.ChaincodeContainerInfo) 
 	if cs.HandlerRegistry.Handler(cname) != nil {
 		return nil
 	}
-
+	// 启动函数，定位到fabric/core/chaincode/runtime_supoort.go/Launch
 	return cs.Launcher.Launch(ccci)
 }
 
@@ -218,12 +218,12 @@ func createCCMessage(messageType pb.ChaincodeMessage_Type, cid string, txid stri
 func (cs *ChaincodeSupport) ExecuteLegacyInit(txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, spec *pb.ChaincodeDeploymentSpec) (*pb.Response, *pb.ChaincodeEvent, error) {
 	ccci := ccprovider.DeploymentSpecToChaincodeContainerInfo(spec)
 	ccci.Version = cccid.Version
-
+	// 启动链码
 	err := cs.LaunchInit(ccci)
 	if err != nil {
 		return nil, nil, err
 	}
-
+	// 注册链码，就是添加个记录
 	cname := ccci.Name + ":" + ccci.Version
 	h := cs.HandlerRegistry.Handler(cname)
 	if h == nil {

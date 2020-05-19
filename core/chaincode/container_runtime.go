@@ -46,7 +46,7 @@ type ContainerRuntime struct {
 // Start launches chaincode in a runtime environment.
 func (c *ContainerRuntime) Start(ccci *ccprovider.ChaincodeContainerInfo, codePackage []byte) error {
 	cname := ccci.Name + ":" + ccci.Version
-
+	// 读取peer的配置文件，关于docker engine的
 	lc, err := c.LaunchConfig(cname, ccci.Type)
 	if err != nil {
 		return err
@@ -55,7 +55,7 @@ func (c *ContainerRuntime) Start(ccci *ccprovider.ChaincodeContainerInfo, codePa
 	chaincodeLogger.Debugf("start container: %s", cname)
 	chaincodeLogger.Debugf("start container with args: %s", strings.Join(lc.Args, " "))
 	chaincodeLogger.Debugf("start container with env:\n\t%s", strings.Join(lc.Envs, "\n\t"))
-
+	// 这里是设置容器的启动配置
 	scr := container.StartContainerReq{
 		Builder: &container.PlatformBuilder{
 			Type:             ccci.Type,
@@ -73,7 +73,8 @@ func (c *ContainerRuntime) Start(ccci *ccprovider.ChaincodeContainerInfo, codePa
 			Version: ccci.Version,
 		},
 	}
-
+	// 启动的地方，ccci.ContainerType又两种sys和docker,用户链码是docker启动，接下来会构造docker client向docker engine请求启动容器
+	// 定位到fabric/conre/container/controller.go/Process
 	if err := c.Processor.Process(ccci.ContainerType, scr); err != nil {
 		return errors.WithMessage(err, "error starting container")
 	}

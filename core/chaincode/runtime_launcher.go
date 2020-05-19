@@ -52,6 +52,7 @@ func (r *RuntimeLauncher) Launch(ccci *ccprovider.ChaincodeContainerInfo) error 
 		}
 
 		go func() {
+			// 启动的地方，定位到fabric/core/chaincode/container_runtime.go
 			if err := r.Runtime.Start(ccci, codePackage); err != nil {
 				startFailCh <- errors.WithMessage(err, "error starting container")
 				return
@@ -65,7 +66,7 @@ func (r *RuntimeLauncher) Launch(ccci *ccprovider.ChaincodeContainerInfo) error 
 	}
 
 	var err error
-	select {
+	select {// 阻塞，等待启动完成
 	case <-launchState.Done():
 		err = errors.WithMessage(launchState.Err(), "chaincode registration failed")
 	case err = <-startFailCh:
