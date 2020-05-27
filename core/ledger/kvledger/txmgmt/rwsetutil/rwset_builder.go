@@ -130,6 +130,7 @@ func (b *RWSetBuilder) AddToHashedMetadataWriteSet(ns, coll, key string, metadat
 // GetTxSimulationResults returns the proto bytes of public rwset
 // (public data + hashes of private data) and the private rwset for the transaction
 func (b *RWSetBuilder) GetTxSimulationResults() (*ledger.TxSimulationResults, error) {
+	// 获取交易模拟执行结果的交易私密数据读写集
 	pvtData := b.getTxPvtReadWriteSet()
 	var err error
 
@@ -137,10 +138,12 @@ func (b *RWSetBuilder) GetTxSimulationResults() (*ledger.TxSimulationResults, er
 	var pvtDataProto *rwset.TxPvtReadWriteSet
 
 	// Populate the collection-level hashes into pub rwset and compute the proto bytes for pvt rwset
+	// 计算私密数据hash
 	if pvtData != nil {
 		if pvtDataProto, err = pvtData.toProtoMsg(); err != nil {
 			return nil, err
 		}
+		// 遍历计算私密数据hash值
 		for _, ns := range pvtDataProto.NsPvtRwset {
 			for _, coll := range ns.CollectionPvtRwset {
 				b.setPvtCollectionHash(ns.Namespace, coll.CollectionName, coll.Rwset)
@@ -148,12 +151,14 @@ func (b *RWSetBuilder) GetTxSimulationResults() (*ledger.TxSimulationResults, er
 		}
 	}
 	// Compute the proto bytes for pub rwset
+	// 获取交易模拟执行结果的公有数据读写集
 	pubSet := b.GetTxReadWriteSet()
 	if pubSet != nil {
 		if pubDataProto, err = b.GetTxReadWriteSet().toProtoMsg(); err != nil {
 			return nil, err
 		}
 	}
+	// 构造交易模拟执行结果
 	return &ledger.TxSimulationResults{
 		PubSimulationResults: pubDataProto,
 		PvtSimulationResults: pvtDataProto,

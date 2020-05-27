@@ -236,6 +236,7 @@ func (cs *ChaincodeSupport) ExecuteLegacyInit(txParams *ccprovider.TransactionPa
 
 // Execute invokes chaincode and returns the original response.
 func (cs *ChaincodeSupport) Execute(txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, input *pb.ChaincodeInput) (*pb.Response, *pb.ChaincodeEvent, error) {
+	
 	resp, err := cs.Invoke(txParams, cccid, input)
 	return processChaincodeExecutionResult(txParams.TxID, cccid.Name, resp, err)
 }

@@ -102,6 +102,7 @@ func ValidateProposalMessage(signedProp *pb.SignedProposal) (*pb.Proposal, *comm
 	}
 
 	// validate the signature
+	// 验证签名
 	err = checkSignatureFromCreator(shdr.Creator, signedProp.Signature, signedProp.ProposalBytes, chdr.ChannelId)
 	if err != nil {
 		// log the exact message on the peer but return a generic error message to
@@ -260,12 +261,12 @@ func validateCommonHeader(hdr *common.Header) (*common.ChannelHeader, *common.Si
 	if err != nil {
 		return nil, nil, err
 	}
-
+	// 校验消息类型是否属于HeaderType_ENDORSER_TRANSACTION、HeaderType_CONFIG_UPDATE、HeaderType_CONFIG、HeaderType_TOKEN_TRANSACTION，并且校验Epoch是否为0
 	err = validateChannelHeader(chdr)
 	if err != nil {
 		return nil, nil, err
 	}
-
+	// 校验shdr shdr.Nonce  shdr.Creator是否为nil，或长度是否为0
 	err = validateSignatureHeader(shdr)
 	if err != nil {
 		return nil, nil, err

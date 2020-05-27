@@ -356,6 +356,7 @@ func (e *Endorser) endorseProposal(_ context.Context, chainID string, txid strin
 
 // preProcess checks the tx proposal headers, uniqueness and ACL
 func (e *Endorser) preProcess(signedProp *pb.SignedProposal) (*validateResult, error) {
+	// 定义一个验证结果的结构体
 	vr := &validateResult{}
 	// at first, we check whether the message is valid
 	// 验证信息是否有效
