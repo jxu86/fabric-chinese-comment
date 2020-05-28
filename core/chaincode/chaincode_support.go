@@ -139,6 +139,8 @@ func (cs *ChaincodeSupport) Launch(chainID, chaincodeName, chaincodeVersion stri
 		return h, nil
 	}
 
+	// 此处到得容器相关的信息，包括生产容器的具体类型是系统链码容器还是用户链码容器
+	// 在后面会说明，系统链码启动的容器是：inprocVM---inproContainer,用户链码启动的容器是DockerVM---DockerContainer
 	ccci, err := cs.Lifecycle.ChaincodeContainerInfo(chaincodeName, qe)
 	if err != nil {
 		// TODO: There has to be a better way to do this...
@@ -151,6 +153,7 @@ func (cs *ChaincodeSupport) Launch(chainID, chaincodeName, chaincodeVersion stri
 		return nil, errors.Wrapf(err, "[channel %s] failed to get chaincode container info for %s", chainID, cname)
 	}
 
+	// 启动Runtime中的Launch
 	if err := cs.Launcher.Launch(ccci); err != nil {
 		return nil, errors.Wrapf(err, "[channel %s] could not launch chaincode %s", chainID, cname)
 	}
@@ -236,8 +239,9 @@ func (cs *ChaincodeSupport) ExecuteLegacyInit(txParams *ccprovider.TransactionPa
 
 // Execute invokes chaincode and returns the original response.
 func (cs *ChaincodeSupport) Execute(txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, input *pb.ChaincodeInput) (*pb.Response, *pb.ChaincodeEvent, error) {
-	
+	// 主要是启动链码容器，调用链码
 	resp, err := cs.Invoke(txParams, cccid, input)
+	// 对链码执行结果进行处理
 	return processChaincodeExecutionResult(txParams.TxID, cccid.Name, resp, err)
 }
 
@@ -283,6 +287,7 @@ func (cs *ChaincodeSupport) InvokeInit(txParams *ccprovider.TransactionParams, c
 // Invoke will invoke chaincode and return the message containing the response.
 // The chaincode will be launched if it is not already running.
 func (cs *ChaincodeSupport) Invoke(txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, input *pb.ChaincodeInput) (*pb.ChaincodeMessage, error) {
+	// 启动链码容器
 	h, err := cs.Launch(txParams.ChannelID, cccid.Name, cccid.Version, txParams.TXSimulator)
 	if err != nil {
 		return nil, err
@@ -299,7 +304,7 @@ func (cs *ChaincodeSupport) Invoke(txParams *ccprovider.TransactionParams, cccid
 	// inited, then, if true, only allow cctyp pb.ChaincodeMessage_TRANSACTION,
 	// otherwise, only allow cctype pb.ChaincodeMessage_INIT,
 	cctype := pb.ChaincodeMessage_TRANSACTION
-
+	// 给链码发送消息
 	return cs.execute(cctype, txParams, cccid, input, h)
 }
 

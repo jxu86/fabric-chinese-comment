@@ -41,10 +41,11 @@ func installCmd(cf *ChaincodeCmdFactory) *cobra.Command {
 			if len(args) > 0 {
 				ccpackfile = args[0]
 			}
+			// 入口函数
 			return chaincodeInstall(cmd, ccpackfile, cf)
 		},
 	}
-	flagList := []string{	// 在安装链码的命令中指定的相关参数
+	flagList := []string{ // 在安装链码的命令中指定的相关参数
 		"lang",
 		"ctor",
 		"path",
@@ -177,7 +178,7 @@ func chaincodeInstall(cmd *cobra.Command, ccpackfile string, cf *ChaincodeCmdFac
 	var ccpackmsg proto.Message
 	// 这个地方有两种情况，链码可能是根据传入参数从本地链码源代码文件读取，也有可能是由其他节点签名打包完成发送过来的
 	if ccpackfile == "" {
-		// 这里是从本地链码源代码文件读取
+		// 这里是从本地链码源代码文件读取,一般从这里进去
 		if chaincodePath == common.UndefinedParamValue || chaincodeVersion == common.UndefinedParamValue || chaincodeName == common.UndefinedParamValue {
 			return fmt.Errorf("Must supply value for %s name, path and version parameters.", chainFuncName)
 		}

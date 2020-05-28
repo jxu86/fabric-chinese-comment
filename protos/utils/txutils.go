@@ -307,17 +307,17 @@ func GetSignedProposal(prop *peer.Proposal, signer msp.SigningIdentity) (*peer.S
 	if prop == nil || signer == nil {
 		return nil, errors.New("nil arguments")
 	}
-
+	// 获取提案信息的字节数组
 	propBytes, err := GetBytesProposal(prop)
 	if err != nil {
 		return nil, err
 	}
-
+	// 对字节数组进行签名
 	signature, err := signer.Sign(propBytes)
 	if err != nil {
 		return nil, err
 	}
-
+	// 返回SignedProposal结构体
 	return &peer.SignedProposal{ProposalBytes: propBytes, Signature: signature}, nil
 }
 

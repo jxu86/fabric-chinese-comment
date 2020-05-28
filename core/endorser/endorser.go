@@ -312,7 +312,8 @@ func (e *Endorser) endorseProposal(_ context.Context, chainID string, txid strin
 	// 1) extract the name of the escc that is requested to endorse this chaincode
 	var escc string
 	// ie, "lscc" or system chaincodes
-	if isSysCC {
+	// 判断是否是系统链码
+	if isSysCC { // 如果是系统链码，则使用escc进行背书
 		escc = "escc"
 	} else {
 		escc = cd.Endorsement()
@@ -323,7 +324,8 @@ func (e *Endorser) endorseProposal(_ context.Context, chainID string, txid strin
 	// marshalling event bytes
 	var err error
 	var eventBytes []byte
-	if event != nil {
+	if event != nil { // 如果链码事件不为空
+		// 获取链码事件
 		eventBytes, err = putils.GetBytesChaincodeEvent(event)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to marshal event bytes")
@@ -334,8 +336,10 @@ func (e *Endorser) endorseProposal(_ context.Context, chainID string, txid strin
 	if isSysCC {
 		// if we want to allow mixed fabric levels we should
 		// set syscc version to ""
+		// 获取系统链码版本
 		ccid.Version = util.GetSysCCVersion()
 	} else {
+		// 获取用户链码版本
 		ccid.Version = cd.CCVersion()
 	}
 
@@ -351,6 +355,7 @@ func (e *Endorser) endorseProposal(_ context.Context, chainID string, txid strin
 		Proposal:       proposal,
 		TxID:           txid,
 	}
+	// 背书
 	return e.s.EndorseWithPlugin(ctx)
 }
 

@@ -240,17 +240,19 @@ func CreateChaincodeProposal(typ common.HeaderType, chainID string, cis *peer.Ch
 // It returns the proposal and the transaction id associated to the proposal
 func CreateChaincodeProposalWithTransient(typ common.HeaderType, chainID string, cis *peer.ChaincodeInvocationSpec, creator []byte, transientMap map[string][]byte) (*peer.Proposal, string, error) {
 	// generate a random nonce
+	// 生成一个随机数
 	nonce, err := crypto.GetRandomNonce()
 	if err != nil {
 		return nil, "", err
 	}
 
 	// compute txid
+	// 计算出一个TxID，具体是根据HASH算法生成的
 	txid, err := ComputeTxID(nonce, creator)
 	if err != nil {
 		return nil, "", err
 	}
-
+	// 用了这个方法,将之前生成的数据传入进去
 	return CreateChaincodeProposalWithTxIDNonceAndTransient(txid, typ, chainID, cis, nonce, creator, transientMap)
 }
 
@@ -278,18 +280,21 @@ func CreateChaincodeProposalWithTxIDAndTransient(typ common.HeaderType, chainID 
 // CreateChaincodeProposalWithTxIDNonceAndTransient creates a proposal from
 // given input
 func CreateChaincodeProposalWithTxIDNonceAndTransient(txid string, typ common.HeaderType, chainID string, cis *peer.ChaincodeInvocationSpec, nonce, creator []byte, transientMap map[string][]byte) (*peer.Proposal, string, error) {
+	// 首先是构造一个ChaincodeHeaderExtension结构体
 	ccHdrExt := &peer.ChaincodeHeaderExtension{ChaincodeId: cis.ChaincodeSpec.ChaincodeId}
+	// 将该结构体序列化
 	ccHdrExtBytes, err := proto.Marshal(ccHdrExt)
 	if err != nil {
 		return nil, "", errors.Wrap(err, "error marshaling ChaincodeHeaderExtension")
 	}
-
+	// 将ChaincodeInvocationSpec结构体序列化
 	cisBytes, err := proto.Marshal(cis)
 	if err != nil {
 		return nil, "", errors.Wrap(err, "error marshaling ChaincodeInvocationSpec")
 	}
-
+	// ChaincodeProposalPayload结构体
 	ccPropPayload := &peer.ChaincodeProposalPayload{Input: cisBytes, TransientMap: transientMap}
+	// 序列化
 	ccPropPayloadBytes, err := proto.Marshal(ccPropPayload)
 	if err != nil {
 		return nil, "", errors.Wrap(err, "error marshaling ChaincodeProposalPayload")
@@ -298,9 +303,9 @@ func CreateChaincodeProposalWithTxIDNonceAndTransient(txid string, typ common.He
 	// TODO: epoch is now set to zero. This must be changed once we
 	// get a more appropriate mechanism to handle it in.
 	var epoch uint64
-
+	// 创建一个时间戳
 	timestamp := util.CreateUtcTimestamp()
-
+	// 构造Header结构体，包含两部分ChannelHeader和SignatureHeader
 	hdr := &common.Header{
 		ChannelHeader: MarshalOrPanic(
 			&common.ChannelHeader{
@@ -319,12 +324,12 @@ func CreateChaincodeProposalWithTxIDNonceAndTransient(txid string, typ common.He
 			},
 		),
 	}
-
+	// 序列化
 	hdrBytes, err := proto.Marshal(hdr)
 	if err != nil {
 		return nil, "", err
 	}
-
+	// 最后构造成一个Proposal
 	prop := &peer.Proposal{
 		Header:  hdrBytes,
 		Payload: ccPropPayloadBytes,

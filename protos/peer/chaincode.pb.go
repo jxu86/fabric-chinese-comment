@@ -3,9 +3,13 @@
 
 package peer // import "github.com/hyperledger/fabric/protos/peer"
 
-import proto "github.com/golang/protobuf/proto"
-import fmt "fmt"
-import math "math"
+import (
+	fmt "fmt"
+
+	proto "github.com/golang/protobuf/proto"
+
+	math "math"
+)
 
 // Reference imports to suppress errors if they are not otherwise used.
 var _ = proto.Marshal
@@ -214,13 +218,16 @@ func (m *ChaincodeInput) GetDecorations() map[string][]byte {
 // Carries the chaincode specification. This is the actual metadata required for
 // defining a chaincode.
 type ChaincodeSpec struct {
-	Type                 ChaincodeSpec_Type `protobuf:"varint,1,opt,name=type,proto3,enum=protos.ChaincodeSpec_Type" json:"type,omitempty"`
-	ChaincodeId          *ChaincodeID       `protobuf:"bytes,2,opt,name=chaincode_id,json=chaincodeId,proto3" json:"chaincode_id,omitempty"`
-	Input                *ChaincodeInput    `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`
-	Timeout              int32              `protobuf:"varint,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
-	XXX_NoUnkeyedLiteral struct{}           `json:"-"`
-	XXX_unrecognized     []byte             `json:"-"`
-	XXX_sizecache        int32              `json:"-"`
+	// 链码的编写语言，GOLANG、JAVA
+	Type ChaincodeSpec_Type `protobuf:"varint,1,opt,name=type,proto3,enum=protos.ChaincodeSpec_Type" json:"type,omitempty"`
+	// ChaincodeId，链码路径、链码名称、链码版本
+	ChaincodeId *ChaincodeID `protobuf:"bytes,2,opt,name=chaincode_id,json=chaincodeId,proto3" json:"chaincode_id,omitempty"`
+	// 链码的具体执行参数信息
+	Input                *ChaincodeInput `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`
+	Timeout              int32           `protobuf:"varint,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}        `json:"-"`
+	XXX_unrecognized     []byte          `json:"-"`
+	XXX_sizecache        int32           `json:"-"`
 }
 
 func (m *ChaincodeSpec) Reset()         { *m = ChaincodeSpec{} }
@@ -278,8 +285,11 @@ func (m *ChaincodeSpec) GetTimeout() int32 {
 // Specify the deployment of a chaincode.
 // TODO: Define `codePackage`.
 type ChaincodeDeploymentSpec struct {
-	ChaincodeSpec        *ChaincodeSpec                               `protobuf:"bytes,1,opt,name=chaincode_spec,json=chaincodeSpec,proto3" json:"chaincode_spec,omitempty"`
+	// ChaincodeSpec消息
+	ChaincodeSpec *ChaincodeSpec `protobuf:"bytes,1,opt,name=chaincode_spec,json=chaincodeSpec,proto3" json:"chaincode_spec,omitempty"`
+	// 链码文件打包
 	CodePackage          []byte                                       `protobuf:"bytes,3,opt,name=code_package,json=codePackage,proto3" json:"code_package,omitempty"`
+	// 链码执行环境，DOCKER或SYSTEM
 	ExecEnv              ChaincodeDeploymentSpec_ExecutionEnvironment `protobuf:"varint,4,opt,name=exec_env,json=execEnv,proto3,enum=protos.ChaincodeDeploymentSpec_ExecutionEnvironment" json:"exec_env,omitempty"`
 	XXX_NoUnkeyedLiteral struct{}                                     `json:"-"`
 	XXX_unrecognized     []byte                                       `json:"-"`
