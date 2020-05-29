@@ -42,6 +42,7 @@ func (r *RuntimeLauncher) Launch(ccci *ccprovider.ChaincodeContainerInfo) error 
 	startTime := time.Now()
 	cname := ccci.Name + ":" + ccci.Version
 	launchState, alreadyStarted := r.Registry.Launching(cname)
+	// 容器是否已经存在
 	if !alreadyStarted {
 		startFailCh = make(chan error, 1)
 		timeoutCh = time.NewTimer(r.StartupTimeout).C
@@ -92,7 +93,7 @@ func (r *RuntimeLauncher) Launch(ccci *ccprovider.ChaincodeContainerInfo) error 
 		"chaincode", cname,
 		"success", strconv.FormatBool(success),
 	).Observe(time.Since(startTime).Seconds())
-
+	// 容器到此启动完成
 	chaincodeLogger.Debug("launch complete")
 	return err
 }

@@ -234,27 +234,28 @@ func (vm *DockerVM) Start(ccid ccintf.CCID, args, env []string, filesToUpload ma
 	attachStdout := viper.GetBool("vm.docker.attachStdout")
 	containerName := vm.GetVMName(ccid)
 	logger := dockerLogger.With("imageName", imageName, "containerName", containerName)
-
+	// 通过VM获得docker客户端
 	client, err := vm.getClientFnc()
 	if err != nil {
 		logger.Debugf("failed to get docker client", "error", err)
 		return err
 	}
-
+	// 停止容器和虚拟机
 	vm.stopInternal(client, containerName, 0, false, false)
-
+	// 创建容器
 	err = vm.createContainer(client, imageName, containerName, args, env, attachStdout)
 	if err == docker.ErrNoSuchImage {
+		// 如果没有镜像，则使用builder来创建相关容器
 		reader, err := builder.Build()
 		if err != nil {
 			return errors.Wrapf(err, "failed to generate Dockerfile to build %s", containerName)
 		}
-
+		// 部署镜像
 		err = vm.deployImage(client, ccid, reader)
 		if err != nil {
 			return err
 		}
-
+		// 创建镜像后，再创建容器
 		err = vm.createContainer(client, imageName, containerName, args, env, attachStdout)
 		if err != nil {
 			logger.Errorf("failed to create container: %s", err)
@@ -273,6 +274,7 @@ func (vm *DockerVM) Start(ccid ccintf.CCID, args, env []string, filesToUpload ma
 
 	// upload specified files to the container before starting it
 	// this can be used for configurations such as TLS key and certs
+	// 处理容器需要的证书相关的文件
 	if len(filesToUpload) != 0 {
 		// the docker upload API takes a tar file, so we need to first
 		// consolidate the file entries to a tar
@@ -290,7 +292,7 @@ func (vm *DockerVM) Start(ccid ccintf.CCID, args, env []string, filesToUpload ma
 		}
 
 		gw.Close()
-
+		// 上传数据
 		err := client.UploadToContainer(containerName, docker.UploadToContainerOptions{
 			InputStream:          bytes.NewReader(payload.Bytes()),
 			Path:                 "/",

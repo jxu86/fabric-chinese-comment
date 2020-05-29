@@ -148,6 +148,7 @@ func (b *PlatformBuilder) Build() (io.Reader, error) {
 }
 
 func (si StartContainerReq) Do(v VM) error {
+	// 调用core/container/dockercontroller/dockercontroller.go
 	return v.Start(si.CCID, si.Args, si.Env, si.FilesToUpload, si.Builder)
 }
 

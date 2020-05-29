@@ -112,6 +112,7 @@ func chaincodeDeploy(cmd *cobra.Command, args []string, cf *ChaincodeCmdFactory)
 
 	var err error
 	if cf == nil {
+		// 如果ChaincodeCmdFactory为空，则初始化一个
 		cf, err = InitCmdFactory(cmd.Name(), true, true)
 		if err != nil {
 			return err

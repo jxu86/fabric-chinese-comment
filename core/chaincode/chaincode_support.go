@@ -126,7 +126,7 @@ func (cs *ChaincodeSupport) LaunchInit(ccci *ccprovider.ChaincodeContainerInfo) 
 	if cs.HandlerRegistry.Handler(cname) != nil {
 		return nil
 	}
-	// 启动函数，定位到fabric/core/chaincode/runtime_supoort.go/Launch
+	// 启动函数，定位到fabric/core/chaincode/runtime_launcher.go/Launch
 	return cs.Launcher.Launch(ccci)
 }
 

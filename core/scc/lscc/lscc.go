@@ -623,20 +623,22 @@ func (lscc *LifeCycleSysCC) executeDeployOrUpgrade(
 	chaincodeName := cds.ChaincodeSpec.ChaincodeId.Name
 	chaincodeVersion := cds.ChaincodeSpec.ChaincodeId.Version
 
+	// 检查链码名字是否合法
 	if err := lscc.isValidChaincodeName(chaincodeName); err != nil {
 		return nil, err
 	}
-
+	// 检查链码版本是否合法
 	if err := lscc.isValidChaincodeVersion(chaincodeName, chaincodeVersion); err != nil {
 		return nil, err
 	}
-
+	// 从本地读取链码
 	ccpack, err := lscc.Support.GetChaincodeFromLocalStorage(chaincodeName, chaincodeVersion)
 	if err != nil {
 		retErrMsg := fmt.Sprintf("cannot get package for chaincode (%s:%s)", chaincodeName, chaincodeVersion)
 		logger.Errorf("%s-err:%s", retErrMsg, err)
 		return nil, fmt.Errorf("%s", retErrMsg)
 	}
+	// 返回ChaincodeData格式数据
 	cd := ccpack.GetChaincodeData()
 
 	switch function {
@@ -664,6 +666,7 @@ func (lscc *LifeCycleSysCC) executeDeploy(
 ) (*ccprovider.ChaincodeData, error) {
 	//just test for existence of the chaincode in the LSCC
 	chaincodeName := cds.ChaincodeSpec.ChaincodeId.Name
+	// 检查实例是否存在
 	_, err := lscc.getCCInstance(stub, chaincodeName)
 	if err == nil {
 		return nil, ExistsErr(chaincodeName)
@@ -680,6 +683,7 @@ func (lscc *LifeCycleSysCC) executeDeploy(
 		return nil, err
 	}
 	// get the signed instantiation proposal
+	// 获取签名提案
 	signedProp, err := stub.GetSignedProposal()
 	if err != nil {
 		return nil, err
@@ -688,12 +692,12 @@ func (lscc *LifeCycleSysCC) executeDeploy(
 	if err != nil {
 		return nil, err
 	}
-
+	// 在链上创建链码
 	err = lscc.putChaincodeData(stub, cdfs)
 	if err != nil {
 		return nil, err
 	}
-
+	// collectionConfigBytes上链
 	err = lscc.putChaincodeCollectionData(stub, cdfs, collectionConfigBytes)
 	if err != nil {
 		return nil, err
@@ -839,7 +843,7 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 		// channel the chaincode should be associated with. It
 		// should be created with a register call
 		channel := string(args[1])
-
+		// 检查channel是否合法
 		if !lscc.isValidChannelName(channel) {
 			return shim.Error(InvalidChannelNameErr(channel).Error())
 		}

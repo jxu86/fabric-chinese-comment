@@ -161,7 +161,7 @@ func Start(cc Chaincode) error {
 	if err != nil {
 		return err
 	}
-
+	// 跟peer节点创建连接
 	err = chatWithPeer(chaincodename, stream, cc)
 
 	return err
