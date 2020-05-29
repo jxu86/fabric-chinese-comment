@@ -80,11 +80,15 @@ var streamGetter peerStreamGetter
 
 //the non-mock user CC stream establishment func
 func userChaincodeStreamGetter(name string) (PeerChaincodeStream, error) {
+	// 获取peer.address
 	flag.StringVar(&peerAddress, "peer.address", "", "peer address")
+	// 判断是否使能TLS
 	if viper.GetBool("peer.tls.enabled") {
+		// 获取tls密钥地址，在用户安装链码的时候指定
 		keyPath := viper.GetString("tls.client.key.path")
+		// 获取tls证书地址
 		certPath := viper.GetString("tls.client.cert.path")
-
+		// 从文件中读取密钥数据
 		data, err1 := ioutil.ReadFile(keyPath)
 		if err1 != nil {
 			err1 = errors.Wrap(err1, fmt.Sprintf("error trying to read file content %s", keyPath))
@@ -92,7 +96,7 @@ func userChaincodeStreamGetter(name string) (PeerChaincodeStream, error) {
 			return nil, err1
 		}
 		key = string(data)
-
+		// 从文件中读取证书数据
 		data, err1 = ioutil.ReadFile(certPath)
 		if err1 != nil {
 			err1 = errors.Wrap(err1, fmt.Sprintf("error trying to read file content %s", certPath))
@@ -101,12 +105,13 @@ func userChaincodeStreamGetter(name string) (PeerChaincodeStream, error) {
 		}
 		cert = string(data)
 	}
-
+	// 解析命令行参数到定义的flag
 	flag.Parse()
 
 	chaincodeLogger.Debugf("Peer address: %s", getPeerAddress())
 
 	// Establish connection with validating peer
+	// 与peer节点建立连接
 	clientConn, err := newPeerClientConnection()
 	if err != nil {
 		err = errors.Wrap(err, "error trying to connect to local peer")
@@ -115,10 +120,11 @@ func userChaincodeStreamGetter(name string) (PeerChaincodeStream, error) {
 	}
 
 	chaincodeLogger.Debugf("os.Args returns: %s", os.Args)
-
+	// 返回一个ChaincodeSupportClient实例,对应着链码容器
 	chaincodeSupportClient := pb.NewChaincodeSupportClient(clientConn)
 
 	// Establish stream with validating peer
+	// 与peer节点建立gRPC连接
 	stream, err := chaincodeSupportClient.Register(context.Background())
 	if err != nil {
 		return nil, errors.WithMessage(err, fmt.Sprintf("error chatting with leader at address=%s", getPeerAddress()))
@@ -131,9 +137,11 @@ func userChaincodeStreamGetter(name string) (PeerChaincodeStream, error) {
 func Start(cc Chaincode) error {
 	// If Start() is called, we assume this is a standalone chaincode and set
 	// up formatted logging.
+	// 对链码的Log进行设置
 	SetupChaincodeLogging()
-
+	// 从输入中获取用户定义的链码的名称
 	chaincodename := viper.GetString("chaincode.id.name")
+	// 如果获取不到链码名称则报错退出
 	if chaincodename == "" {
 		return errors.New("error chaincode id not provided")
 	}
@@ -144,6 +152,7 @@ func Start(cc Chaincode) error {
 	}
 
 	//mock stream not set up ... get real stream
+	// 将链码数据以流的方式读取进来
 	if streamGetter == nil {
 		streamGetter = userChaincodeStreamGetter
 	}
@@ -305,12 +314,15 @@ func getPeerAddress() string {
 }
 
 func newPeerClientConnection() (*grpc.ClientConn, error) {
+	// 获取到peer节点的地址
 	var peerAddress = getPeerAddress()
 	// set the keepalive options to match static settings for chaincode server
+	// 设置与链码之间的心中信息
 	kaOpts := &comm.KeepaliveOptions{
 		ClientInterval: time.Duration(1) * time.Minute,
 		ClientTimeout:  time.Duration(20) * time.Second,
 	}
+	// 判断是否使能了TLS
 	if viper.GetBool("peer.tls.enabled") {
 		return comm.NewClientConnectionWithAddress(peerAddress, true, true,
 			comm.InitTLSForShim(key, cert), kaOpts)
@@ -320,11 +332,14 @@ func newPeerClientConnection() (*grpc.ClientConn, error) {
 
 func chatWithPeer(chaincodename string, stream PeerChaincodeStream, cc Chaincode) error {
 	// Create the shim handler responsible for all control logic
+	// 新建Handler对象
 	handler := newChaincodeHandler(stream, cc)
 	defer stream.CloseSend()
 
 	// Send the ChaincodeID during register.
+	// 获取链码名称
 	chaincodeID := &pb.ChaincodeID{Name: chaincodename}
+	// 将获取的链码名称序列化为有效载荷.
 	payload, err := proto.Marshal(chaincodeID)
 	if err != nil {
 		return errors.Wrap(err, "error marshalling chaincodeID during chaincode registration")
@@ -332,11 +347,13 @@ func chatWithPeer(chaincodename string, stream PeerChaincodeStream, cc Chaincode
 
 	// Register on the stream
 	chaincodeLogger.Debugf("Registering.. sending %s", pb.ChaincodeMessage_REGISTER)
+	// 链码容器通过handler开始通过gRPC连接向Peer节点发送第一个消息了，链码容器向Peer节点发送REGISTER消息，并附上链码的名称
 	if err = handler.serialSend(&pb.ChaincodeMessage{Type: pb.ChaincodeMessage_REGISTER, Payload: payload}); err != nil {
 		return errors.WithMessage(err, "error sending chaincode REGISTER")
 	}
 
 	// holds return values from gRPC Recv below
+	// 定义一个接收消息的结构体
 	type recvMsg struct {
 		msg *pb.ChaincodeMessage
 		err error
@@ -348,7 +365,7 @@ func chatWithPeer(chaincodename string, stream PeerChaincodeStream, cc Chaincode
 		in, err := stream.Recv()
 		msgAvail <- &recvMsg{in, err}
 	}
-
+	// 开启线程接收由Peer节点返回的响应消息
 	go receiveMessage()
 	for {
 		select {
@@ -368,12 +385,13 @@ func chatWithPeer(chaincodename string, stream PeerChaincodeStream, cc Chaincode
 				return err
 			default:
 				chaincodeLogger.Debugf("[%s]Received message %s from peer", shorttxid(rmsg.msg.Txid), rmsg.msg.Type)
+				// 处理接收到的信息
 				err := handler.handleMessage(rmsg.msg, errc)
 				if err != nil {
 					err = errors.WithMessage(err, "error handling message")
 					return err
 				}
-
+				// 当消息处理完成后，再次接收消息
 				go receiveMessage()
 			}
 

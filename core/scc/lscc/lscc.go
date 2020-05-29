@@ -545,30 +545,33 @@ func isValidStatedbArtifactsTar(statedbArtifactsTar []byte) error {
 
 // executeInstall implements the "install" Invoke transaction
 func (lscc *LifeCycleSysCC) executeInstall(stub shim.ChaincodeStubInterface, ccbytes []byte) error {
+	// 还原链码结构CDSPackage
 	ccpack, err := ccprovider.GetCCPackage(ccbytes)
 	if err != nil {
 		return err
 	}
-
+	// 获取ChaincodeDeploymentSpec结构数据
 	cds := ccpack.GetDepSpec()
 
 	if cds == nil {
 		return fmt.Errorf("nil deployment spec from from the CC package")
 	}
-
+	// 链码名字是否合法
 	if err = lscc.isValidChaincodeName(cds.ChaincodeSpec.ChaincodeId.Name); err != nil {
 		return err
 	}
-
+	// 链码版本是否合法
 	if err = lscc.isValidChaincodeVersion(cds.ChaincodeSpec.ChaincodeId.Name, cds.ChaincodeSpec.ChaincodeId.Version); err != nil {
 		return err
 	}
 
+	// 系统链码不给安装
 	if lscc.SCCProvider.IsSysCC(cds.ChaincodeSpec.ChaincodeId.Name) {
 		return errors.Errorf("cannot install: %s is the name of a system chaincode", cds.ChaincodeSpec.ChaincodeId.Name)
 	}
 
 	// Get any statedb artifacts from the chaincode package, e.g. couchdb index definitions
+	// 解压状态db数据
 	statedbArtifactsTar, err := ccprovider.ExtractStatedbArtifactsFromCCPackage(ccpack, lscc.PlatformRegistry)
 	if err != nil {
 		return err
@@ -587,6 +590,7 @@ func (lscc *LifeCycleSysCC) executeInstall(stub shim.ChaincodeStubInterface, ccb
 	// any channel's statedb where the chaincode is already instantiated
 	// Note - this step is done prior to PutChaincodeToLocalStorage() since this step is idempotent and harmless until endorsements start,
 	// that is, if there are errors deploying the indexes the chaincode install can safely be re-attempted later.
+	// 处理安装，含有db数据
 	err = cceventmgmt.GetMgr().HandleChaincodeInstall(chaincodeDefinition, statedbArtifactsTar)
 	defer func() {
 		cceventmgmt.GetMgr().ChaincodeInstallDone(err == nil)
@@ -596,6 +600,7 @@ func (lscc *LifeCycleSysCC) executeInstall(stub shim.ChaincodeStubInterface, ccb
 	}
 
 	// Finally, if everything is good above, install the chaincode to local peer file system so that endorsements can start
+	// 最后把文件写到指定文件路径
 	if err = lscc.Support.PutChaincodeToLocalStorage(ccpack); err != nil {
 		return err
 	}
@@ -799,6 +804,7 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 
 	// Handle ACL:
 	// 1. get the signed proposal
+	// 获取签名提案
 	sp, err := stub.GetSignedProposal()
 	if err != nil {
 		return shim.Error(fmt.Sprintf("Failed retrieving signed proposal on executing %s with error %s", function, err))
@@ -811,6 +817,7 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 		}
 
 		// 2. check local MSP Admins policy
+		// 检查 local MSP Admins 策略
 		if err = lscc.PolicyChecker.CheckPolicyNoChannel(mgmt.Admins, sp); err != nil {
 			return shim.Error(fmt.Sprintf("access denied for [%s]: %s", function, err))
 		}

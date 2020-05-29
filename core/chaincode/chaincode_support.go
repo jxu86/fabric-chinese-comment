@@ -135,6 +135,7 @@ func (cs *ChaincodeSupport) LaunchInit(ccci *ccprovider.ChaincodeContainerInfo) 
 // error. If the chaincode is already running, it simply returns.
 func (cs *ChaincodeSupport) Launch(chainID, chaincodeName, chaincodeVersion string, qe ledger.QueryExecutor) (*Handler, error) {
 	cname := chaincodeName + ":" + chaincodeVersion
+	// 如果是系统链码，在peer启动的时候已经初始化了，所以下面语句直接返回了
 	if h := cs.HandlerRegistry.Handler(cname); h != nil {
 		return h, nil
 	}
@@ -311,11 +312,12 @@ func (cs *ChaincodeSupport) Invoke(txParams *ccprovider.TransactionParams, cccid
 // execute executes a transaction and waits for it to complete until a timeout value.
 func (cs *ChaincodeSupport) execute(cctyp pb.ChaincodeMessage_Type, txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, input *pb.ChaincodeInput, h *Handler) (*pb.ChaincodeMessage, error) {
 	input.Decorations = txParams.ProposalDecorations
+	// 创建一个ChaincodeMessage结构体消息
 	ccMsg, err := createCCMessage(cctyp, txParams.ChannelID, txParams.TxID, input)
 	if err != nil {
 		return nil, errors.WithMessage(err, "failed to create chaincode message")
 	}
-
+	
 	ccresp, err := h.Execute(txParams, cccid, ccMsg, cs.ExecuteTimeout)
 	if err != nil {
 		return nil, errors.WithMessage(err, fmt.Sprintf("error sending"))

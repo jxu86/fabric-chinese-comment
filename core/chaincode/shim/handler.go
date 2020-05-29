@@ -165,10 +165,12 @@ func (handler *Handler) deleteChannel(channelID, txid string) {
 // NewChaincodeHandler returns a new instance of the shim side handler.
 func newChaincodeHandler(peerChatStream PeerChaincodeStream, chaincode Chaincode) *Handler {
 	v := &Handler{
-		ChatStream: peerChatStream,
-		cc:         chaincode,
+		ChatStream: peerChatStream,		// 与Peer节点通信的流
+		cc:         chaincode,			// 链码
 	}
+	// 链码信息响应通道
 	v.responseChannel = make(map[string]chan pb.ChaincodeMessage)
+	// 表示将链码容器的状态更改为created
 	v.state = created
 	return v
 }
@@ -827,6 +829,7 @@ func (handler *Handler) handleCreated(msg *pb.ChaincodeMessage, errc chan error)
 
 // handleMessage message handles loop for shim side of chaincode/peer stream.
 func (handler *Handler) handleMessage(msg *pb.ChaincodeMessage, errc chan error) error {
+	// 如果链码容器接收到Peer节点发送的心跳消息后，直接将心跳消息返回，双方就一直保持联系。
 	if msg.Type == pb.ChaincodeMessage_KEEPALIVE {
 		chaincodeLogger.Debug("Sending KEEPALIVE response")
 		handler.serialSendAsync(msg, nil) // ignore errors, maybe next KEEPALIVE will work

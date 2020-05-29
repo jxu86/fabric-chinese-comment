@@ -1238,7 +1238,7 @@ func (h *Handler) Execute(txParams *ccprovider.TransactionParams, cccid *ccprovi
 	if err := h.setChaincodeProposal(txParams.SignedProp, txParams.Proposal, msg); err != nil {
 		return nil, err
 	}
-
+	// 异步发送grpc消息
 	h.serialSendAsync(msg)
 
 	var ccresp *pb.ChaincodeMessage
