@@ -421,12 +421,14 @@ func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block, ccp ccp
 		mspCallback,
 		peerSingletonCallback,
 	)
-
+    // 构建新的验证链码支持对象
 	vcs := struct {
 		*chainSupport
 		*semaphore.Weighted
 	}{cs, validationWorkersSemaphore}
+	// 创建交易验证器
 	validator := txvalidator.NewTxValidator(cid, vcs, sccp, pm)
+	// 创建账本提交器
 	c := committer.NewLedgerCommitterReactive(ledger, func(block *common.Block) error {
 		chainID, err := utils.GetChainIDFromBlock(block)
 		if err != nil {
@@ -456,6 +458,7 @@ func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block, ccp ccp
 	}
 
 	// TODO: does someone need to call Close() on the transientStoreFactory at shutdown of the peer?
+	// 创建Transient隐私数据存储对象
 	store, err := TransientStoreFactory.OpenStore(bundle.ConfigtxValidator().ChainID())
 	if err != nil {
 		return errors.Wrapf(err, "[channel %s] failed opening transient store", bundle.ConfigtxValidator().ChainID())
@@ -470,6 +473,7 @@ func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block, ccp ccp
 		AddressesByOrg: ordererAddressesByOrg,
 		Organizations:  ordererOrganizations,
 	}
+	// 初始化指定通道的gossip模块
 	service.GetGossipService().InitializeChannel(bundle.ConfigtxValidator().ChainID(), oac, service.Support{
 		Validator:            validator,
 		Committer:            c,
@@ -481,6 +485,7 @@ func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block, ccp ccp
 
 	chains.Lock()
 	defer chains.Unlock()
+	// 放入chain map中
 	chains.list[cid] = &chain{
 		cs:        cs,
 		cb:        cb,

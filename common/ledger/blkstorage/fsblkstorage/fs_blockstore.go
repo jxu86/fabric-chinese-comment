@@ -37,6 +37,7 @@ type fsBlockStore struct {
 // NewFsBlockStore constructs a `FsBlockStore`
 func newFsBlockStore(id string, conf *Conf, indexConfig *blkstorage.IndexConfig,
 	dbHandle *leveldbhelper.DBHandle, stats *stats) *fsBlockStore {
+	// 返回blockfileMgr结构体数据
 	fileMgr := newBlockfileMgr(id, conf, indexConfig, dbHandle)
 
 	// create ledgerStats and initialize blockchain_height stat

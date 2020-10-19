@@ -59,6 +59,7 @@ type Support interface {
 // and return the bit array mask indicating invalid transactions which
 // didn't pass validation.
 type Validator interface {
+	// 验证区块交易数据的合法性
 	Validate(block *common.Block) error
 }
 

@@ -158,9 +158,11 @@ func (c *coordinator) StorePvtData(txID string, privData *transientstore2.TxPvtR
 
 // StoreBlock stores block with private data into the ledger
 func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDataCollections) error {
+	// 对data验证
 	if block.Data == nil {
 		return errors.New("Block data is empty")
 	}
+	// 对header验证
 	if block.Header == nil {
 		return errors.New("Block header is nil")
 	}
@@ -170,13 +172,14 @@ func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDa
 	logger.Debugf("[%s] Validating block [%d]", c.ChainID, block.Header.Number)
 
 	validationStart := time.Now()
+	// 对交易进行验证，包括调用vscc链码
 	err := c.Validator.Validate(block)
 	c.reportValidationDuration(time.Since(validationStart))
 	if err != nil {
 		logger.Errorf("Validation failed: %+v", err)
 		return err
 	}
-
+	
 	blockAndPvtData := &ledger.BlockAndPvtData{
 		Block:          block,
 		PvtData:        make(ledger.TxPvtDataMap),
@@ -193,12 +196,13 @@ func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDa
 	}
 
 	listMissingStart := time.Now()
+	// 获取该区块上交易相关的私密数据集
 	ownedRWsets, err := computeOwnedRWsets(block, privateDataSets)
 	if err != nil {
 		logger.Warning("Failed computing owned RWSets", err)
 		return err
 	}
-
+	// 标识丢失的私密数据读写集，并尝试从本地瞬时数据库中检索它们
 	privateInfo, err := c.listMissingPrivateData(block, ownedRWsets)
 	if err != nil {
 		logger.Warning(err)
@@ -234,6 +238,7 @@ func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDa
 	startPull := time.Now()
 	limit := startPull.Add(retryThresh)
 	for len(privateInfo.missingKeys) > 0 && time.Now().Before(limit) {
+		// 从其他peer节点获取缺失的私密数据
 		c.fetchFromPeers(block.Header.Number, ownedRWsets, privateInfo)
 		// If succeeded to fetch everything, no need to sleep before
 		// retry

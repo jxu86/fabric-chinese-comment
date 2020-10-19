@@ -904,7 +904,7 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 		if ac.Capabilities().PrivateChannelData() && len(args) > 6 {
 			collectionsConfig = args[6]
 		}
-
+		
 		cd, err := lscc.executeDeployOrUpgrade(stub, channel, cds, EP, escc, vscc, collectionsConfig, function)
 		if err != nil {
 			return shim.Error(err.Error())

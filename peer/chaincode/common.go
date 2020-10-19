@@ -86,7 +86,7 @@ func getChaincodeSpec(cmd *cobra.Command) (*pb.ChaincodeSpec, error) {
 	}
 
 	chaincodeLang = strings.ToUpper(chaincodeLang)
-	// 最后封装为ChaincodeSpec结构体返回 
+	// 最后封装为ChaincodeSpec结构体返回
 	spec = &pb.ChaincodeSpec{
 		Type:        pb.ChaincodeSpec_Type(pb.ChaincodeSpec_Type_value[chaincodeLang]),
 		ChaincodeId: &pb.ChaincodeID{Path: chaincodePath, Name: chaincodeName, Version: chaincodeVersion},
@@ -96,6 +96,7 @@ func getChaincodeSpec(cmd *cobra.Command) (*pb.ChaincodeSpec, error) {
 }
 
 func chaincodeInvokeOrQuery(cmd *cobra.Command, invoke bool, cf *ChaincodeCmdFactory) (err error) {
+	// 生成ChaincodeSpec结构
 	spec, err := getChaincodeSpec(cmd)
 	if err != nil {
 		return err
@@ -104,7 +105,7 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, invoke bool, cf *ChaincodeCmdFac
 	// call with empty txid to ensure production code generates a txid.
 	// otherwise, tests can explicitly set their own txid
 	txID := ""
-
+	// 发送背书请求和广播信息给orderer节点
 	proposalResp, err := ChaincodeInvokeOrQuery(
 		spec,
 		channelID,
@@ -120,7 +121,7 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, invoke bool, cf *ChaincodeCmdFac
 		return errors.Errorf("%s - proposal response: %v", err, proposalResp)
 	}
 
-	if invoke {
+	if invoke { // peer chaincode invoke
 		logger.Debugf("ESCC invoke result: %v", proposalResp)
 		pRespPayload, err := putils.GetProposalResponsePayload(proposalResp.Payload)
 		if err != nil {
@@ -134,7 +135,7 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, invoke bool, cf *ChaincodeCmdFac
 			return errors.Errorf("endorsement failure during invoke. response: %v", proposalResp.Response)
 		}
 		logger.Infof("Chaincode invoke successful. result: %v", ca.Response)
-	} else {
+	} else { // peer chaincode query
 		if proposalResp == nil {
 			return errors.New("error during query: received nil proposal response")
 		}
@@ -339,11 +340,11 @@ func validatePeerConnectionParameters(cmdName string) error {
 
 // ChaincodeCmdFactory holds the clients used by ChaincodeCmd
 type ChaincodeCmdFactory struct {
-	EndorserClients []pb.EndorserClient			// 用于向背书节点发送消息
-	DeliverClients  []api.PeerDeliverClient 	// 用于与Order节点通信
-	Certificate     tls.Certificate				// TLS证书相关
-	Signer          msp.SigningIdentity			// 用于消息的签名
-	BroadcastClient common.BroadcastClient		// 用于广播消息
+	EndorserClients []pb.EndorserClient     // 用于向背书节点发送消息
+	DeliverClients  []api.PeerDeliverClient // 用于与Order节点通信
+	Certificate     tls.Certificate         // TLS证书相关
+	Signer          msp.SigningIdentity     // 用于消息的签名
+	BroadcastClient common.BroadcastClient  // 用于广播消息
 }
 
 // InitCmdFactory init the ChaincodeCmdFactory with default clients
@@ -460,18 +461,19 @@ func ChaincodeInvokeOrQuery(
 			return nil, errors.Wrap(err, "error parsing transient string")
 		}
 	}
-
+	// 构造Proposal数据结构
 	prop, txid, err := putils.CreateChaincodeProposalWithTxIDAndTransient(pcommon.HeaderType_ENDORSER_TRANSACTION, cID, invocation, creator, txID, tMap)
 	if err != nil {
 		return nil, errors.WithMessage(err, fmt.Sprintf("error creating proposal for %s", funcName))
 	}
-
+	// 签名
 	signedProp, err := putils.GetSignedProposal(prop, signer)
 	if err != nil {
 		return nil, errors.WithMessage(err, fmt.Sprintf("error creating signed proposal for %s", funcName))
 	}
 	var responses []*pb.ProposalResponse
 	for _, endorser := range endorserClients {
+		// 发送请求背书到peer节点
 		proposalResp, err := endorser.ProcessProposal(context.Background(), signedProp)
 		if err != nil {
 			return nil, errors.WithMessage(err, fmt.Sprintf("error endorsing %s", funcName))

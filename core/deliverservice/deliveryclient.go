@@ -209,10 +209,12 @@ func (d *deliverServiceImpl) StartDeliverForChannel(chainID string, ledgerInfo b
 	} else {
 		client := d.newClient(chainID, ledgerInfo)
 		logger.Debug("This peer will pass blocks from orderer service to other peers for channel", chainID)
+		// 创建区块deliver实例
 		d.deliverClients[chainID] = &deliverClient{
 			bp:      blocksprovider.NewBlocksProvider(chainID, client, d.conf.Gossip, d.conf.CryptoSvc),
 			bclient: client,
 		}
+		// 执行
 		go d.launchBlockProvider(chainID, finalizer)
 	}
 	return nil

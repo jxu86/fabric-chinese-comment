@@ -46,6 +46,7 @@ func NewCA(baseDir, org, name, country, province, locality, orgUnit, streetAddre
 
 	err := os.MkdirAll(baseDir, 0755)
 	if err == nil {
+		// 生成私钥和证书
 		priv, signer, err := csp.GeneratePrivateKey(baseDir)
 		response = err
 		if err == nil {

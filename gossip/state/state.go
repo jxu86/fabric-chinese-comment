@@ -807,6 +807,7 @@ func (s *GossipStateProviderImpl) commitBlock(block *common.Block, pvtData util.
 	t1 := time.Now()
 
 	// Commit block with available private transactions
+	// 保存区块
 	if err := s.ledger.StoreBlock(block, pvtData); err != nil {
 		logger.Errorf("Got error while committing(%+v)", errors.WithStack(err))
 		return err
@@ -816,6 +817,7 @@ func (s *GossipStateProviderImpl) commitBlock(block *common.Block, pvtData util.
 	s.stateMetrics.CommitDuration.With("channel", s.chainID).Observe(sinceT1.Seconds())
 
 	// Update ledger height
+	// 更新区块高度
 	s.mediator.UpdateLedgerHeight(block.Header.Number+1, common2.ChainID(s.chainID))
 	logger.Debugf("[%s] Committed block [%d] with %d transaction(s)",
 		s.chainID, block.Header.Number, len(block.Data.Data))

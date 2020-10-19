@@ -115,37 +115,42 @@ type deliverClientIntf interface {
 
 // ChannelCmdFactory holds the clients used by ChannelCmdFactory
 type ChannelCmdFactory struct {
-	EndorserClient   pb.EndorserClient
-	Signer           msp.SigningIdentity
-	BroadcastClient  common.BroadcastClient
-	DeliverClient    deliverClientIntf
-	BroadcastFactory BroadcastClientFactory
+	EndorserClient   pb.EndorserClient			// 用于背书的客户端
+	Signer           msp.SigningIdentity		// 签名者
+	BroadcastClient  common.BroadcastClient		// 用于广播的客户端
+	DeliverClient    deliverClientIntf			// 用于交付的客户端
+	BroadcastFactory BroadcastClientFactory		// 创建用于广播的客户端的工厂
 }
 
 // InitCmdFactory init the ChannelCmdFactory with clients to endorser and orderer according to params
 func InitCmdFactory(isEndorserRequired, isPeerDeliverRequired, isOrdererRequired bool) (*ChannelCmdFactory, error) {
+	// 这里的意思就是只能有一个交付源，要么是Peer要么是Orderer
 	if isPeerDeliverRequired && isOrdererRequired {
 		// this is likely a bug during development caused by adding a new cmd
 		return nil, errors.New("ERROR - only a single deliver source is currently supported")
 	}
 
 	var err error
+	// 初始化ChannelCmdFactory
 	cf := &ChannelCmdFactory{}
-
+	// 获取默认的签名者，通常是Peer节点
 	cf.Signer, err = common.GetDefaultSignerFnc()
 	if err != nil {
 		return nil, errors.WithMessage(err, "error getting default signer")
 	}
 
 	cf.BroadcastFactory = func() (common.BroadcastClient, error) {
+		// 根据ChannelCmdFactory结构体中的BroadcastFactory获取BroadcastClient
 		return common.GetBroadcastClientFnc()
 	}
 
 	// for join and list, we need the endorser as well
+	// 我们这里是完成对通道的创建，所以只使用了最后一个isOrdererRequired
 	if isEndorserRequired {
 		// creating an EndorserClient with these empty parameters will create a
 		// connection using the values of "peer.address" and
 		// "peer.tls.rootcert.file"
+		// 创建一个用于背书的客户端
 		cf.EndorserClient, err = common.GetEndorserClientFnc(common.UndefinedParamValue, common.UndefinedParamValue)
 		if err != nil {
 			return nil, errors.WithMessage(err, "error getting endorser client for channel")
@@ -154,6 +159,7 @@ func InitCmdFactory(isEndorserRequired, isPeerDeliverRequired, isOrdererRequired
 
 	// for fetching blocks from a peer
 	if isPeerDeliverRequired {
+		// 从Peer节点创建一个用于交付的客户端
 		cf.DeliverClient, err = common.NewDeliverClientForPeer(channelID, bestEffort)
 		if err != nil {
 			return nil, errors.WithMessage(err, "error getting deliver client for channel")
@@ -165,6 +171,7 @@ func InitCmdFactory(isEndorserRequired, isPeerDeliverRequired, isOrdererRequired
 		if len(strings.Split(common.OrderingEndpoint, ":")) != 2 {
 			return nil, errors.Errorf("ordering service endpoint %s is not valid or missing", common.OrderingEndpoint)
 		}
+		// 从Order节点创建一个一个用于交付的客户端
 		cf.DeliverClient, err = common.NewDeliverClientForOrderer(channelID, bestEffort)
 		if err != nil {
 			return nil, err

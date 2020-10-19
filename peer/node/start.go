@@ -182,7 +182,7 @@ func serve(args []string) error {
 	// 创建成员关系信息Provider，简单来说就是保存其他Peer节点的信息，以便通信等等
 	membershipInfoProvider := privdata.NewMembershipInfoProvider(createSelfSignedData(), identityDeserializerFactory)
 	//initialize resource management exit
-	// 账本管理器初始化，主要就是之前所定义的一些属性
+	// 账本管理器初始化，主要就是之前所定义的一些属性, `core/ledger/ledger_mgmt.go`
 	ledgermgmt.Initialize(
 		&ledgermgmt.Initializer{
 			CustomTxProcessors:            peer.ConfigTxProcessors, // 与Tx处理相关

@@ -143,45 +143,52 @@ func sanityCheckAndSignConfigTx(envConfigUpdate *cb.Envelope) (*cb.Envelope, err
 
 func sendCreateChainTransaction(cf *ChannelCmdFactory) error {
 	var err error
+	// 定义了一个Envelope结构体
 	var chCrtEnv *cb.Envelope
 
 	if channelTxFile != "" {
+		// 如果指定了channelTxFile，则使用指定的文件创建通道，这个方法很简单，从文件中读取数据，
+		// 反序列化后返回chCrtEnv.对于我们启动Fabric网络之前曾创建过一个channel.tx文件，指的就是这个
 		if chCrtEnv, err = createChannelFromConfigTx(channelTxFile); err != nil {
 			return err
 		}
 	} else {
+		// 如果没有指定，则使用默认的配置创建通道
 		if chCrtEnv, err = createChannelFromDefaults(cf); err != nil {
 			return err
 		}
 	}
-
+	// 该方法主要是对刚刚创建的Envelope进行验证
 	if chCrtEnv, err = sanityCheckAndSignConfigTx(chCrtEnv); err != nil {
 		return err
 	}
 
 	var broadcastClient common.BroadcastClient
+	// 创建一个用于广播信息的客户端
 	broadcastClient, err = cf.BroadcastFactory()
 	if err != nil {
 		return errors.WithMessage(err, "error getting broadcast client")
 	}
 
 	defer broadcastClient.Close()
+	// 将创建通道的Envelope信息广播出去
 	err = broadcastClient.Send(chCrtEnv)
 
 	return err
 }
 
 func executeCreate(cf *ChannelCmdFactory) error {
+	// 发送创建通道的Transaction到Order节点
 	err := sendCreateChainTransaction(cf)
 	if err != nil {
 		return err
 	}
-
+	// 获取该通道内的创世区块(该过程在Order节点共识完成之后)
 	block, err := getGenesisBlock(cf)
 	if err != nil {
 		return err
 	}
-
+	// 序列化区块信息
 	b, err := proto.Marshal(block)
 	if err != nil {
 		return err
@@ -191,6 +198,7 @@ func executeCreate(cf *ChannelCmdFactory) error {
 	if outputBlock != common.UndefinedParamValue {
 		file = outputBlock
 	}
+	// 将区块信息写入本地文件中
 	err = ioutil.WriteFile(file, b, 0644)
 	if err != nil {
 		return err
@@ -235,6 +243,7 @@ func create(cmd *cobra.Command, args []string, cf *ChannelCmdFactory) error {
 
 	var err error
 	if cf == nil {
+		// 初始化ChannelCmdFactory
 		cf, err = InitCmdFactory(EndorserNotRequired, PeerDeliverNotRequired, OrdererRequired)
 		if err != nil {
 			return err

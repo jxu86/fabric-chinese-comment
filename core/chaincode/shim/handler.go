@@ -272,6 +272,7 @@ func (handler *Handler) handleTransaction(msg *pb.ChaincodeMessage, errc chan er
 		if nextStateMsg = errFunc(err, stub.chaincodeEvent, "[%s] Transaction execution failed. Sending %s", shorttxid(msg.Txid), pb.ChaincodeMessage_ERROR.String()); nextStateMsg != nil {
 			return
 		}
+		// 调用链码的Invoke函数
 		res := handler.cc.Invoke(stub)
 
 		// Endorser will handle error contained in Response.

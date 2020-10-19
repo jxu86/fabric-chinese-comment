@@ -28,8 +28,8 @@ const (
 
 // Conf encapsulates all the configurations for `FsBlockStore`
 type Conf struct {
-	blockStorageDir  string
-	maxBlockfileSize int
+	blockStorageDir  string		// 块数据库存储服务对象所使用的路径
+	maxBlockfileSize int		// 储存文件大小，默认64M
 }
 
 // NewConf constructs new `Conf`.

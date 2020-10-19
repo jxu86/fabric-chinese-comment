@@ -51,13 +51,14 @@ type Initializer struct {
 func Initialize(initializer *Initializer) {
 	once.Do(func() {
 		initialize(initializer)
-	})
+	}) 
 }
 
 func initialize(initializer *Initializer) {
 	logger.Info("Initializing ledger mgmt")
 	lock.Lock()
 	defer lock.Unlock()
+	// 初始化标识
 	initialized = true
 	openedLedgers = make(map[string]ledger.PeerLedger)
 	customtx.Initialize(initializer.CustomTxProcessors)
@@ -66,10 +67,12 @@ func initialize(initializer *Initializer) {
 		initializer.DeployedChaincodeInfoProvider,
 	})
 	finalStateListeners := addListenerForCCEventsHandler(initializer.DeployedChaincodeInfoProvider, []ledger.StateListener{})
+	// core/ledger/kvledger/kv_ledger_provider.go
 	provider, err := kvledger.NewProvider()
 	if err != nil {
 		panic(errors.WithMessage(err, "Error in instantiating ledger provider"))
 	}
+	// core/ledger/kvledger/kv_ledger_provider.go
 	err = provider.Initialize(&ledger.Initializer{
 		StateListeners:                finalStateListeners,
 		DeployedChaincodeInfoProvider: initializer.DeployedChaincodeInfoProvider,

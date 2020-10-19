@@ -40,10 +40,10 @@ var (
 
 // Provider implements interface ledger.PeerLedgerProvider
 type Provider struct {
-	idStore             *idStore
-	ledgerStoreProvider *ledgerstorage.Provider
-	vdbProvider         privacyenabledstate.DBProvider
-	historydbProvider   historydb.HistoryDBProvider
+	idStore             *idStore                       // ledgerID数据库
+	ledgerStoreProvider *ledgerstorage.Provider        // blkstorage
+	vdbProvider         privacyenabledstate.DBProvider // statedb
+	historydbProvider   historydb.HistoryDBProvider    // historydb
 	configHistoryMgr    confighistory.Mgr
 	stateListeners      []ledger.StateListener
 	bookkeepingProvider bookkeeping.Provider
@@ -58,8 +58,10 @@ type Provider struct {
 func NewProvider() (ledger.PeerLedgerProvider, error) {
 	logger.Info("Initializing ledger provider")
 	// Initialize the ID store (inventory of chainIds/ledgerIds)
+	// 初始化ledger id数据库
 	idStore := openIDStore(ledgerconfig.GetLedgerProviderPath())
 	// Initialize the history database (index for history of values by key)
+	// 初始化历史状态索引数据库
 	historydbProvider := historyleveldb.NewHistoryDBProvider()
 
 	fileLock := leveldbhelper.NewFileLock(ledgerconfig.GetFileLockPath())
@@ -88,6 +90,7 @@ func (provider *Provider) Initialize(initializer *ledger.Initializer) error {
 	stateListeners = append(stateListeners, configHistoryMgr)
 
 	provider.initializer = initializer
+	// core/ledger/ledgerstorage/store.go
 	provider.ledgerStoreProvider = ledgerstorage.NewProvider(initializer.MetricsProvider)
 	provider.configHistoryMgr = configHistoryMgr
 	provider.stateListeners = stateListeners
@@ -98,6 +101,7 @@ func (provider *Provider) Initialize(initializer *ledger.Initializer) error {
 		return err
 	}
 	provider.stats = newStats(initializer.MetricsProvider)
+	// 用于恢复处理一些之前账本初始化失败的操作
 	provider.recoverUnderConstructionLedger()
 	return nil
 }

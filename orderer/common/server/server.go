@@ -146,6 +146,7 @@ func (s *server) Broadcast(srv ab.AtomicBroadcast_BroadcastServer) error {
 		}
 		logger.Debugf("Closing Broadcast stream")
 	}()
+	// 对接收到的信息进行处理,order/common/broadcast/broadcast.go
 	return s.bh.Handle(&broadcastMsgTracer{
 		AtomicBroadcast_BroadcastServer: srv,
 		msgTracer: msgTracer{

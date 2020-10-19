@@ -34,15 +34,15 @@ type PeerLedgerProvider interface {
 	// Create creates a new ledger with the given genesis block.
 	// This function guarantees that the creation of ledger and committing the genesis block would an atomic action
 	// The chain id retrieved from the genesis block is treated as a ledger id
-	Create(genesisBlock *common.Block) (PeerLedger, error)
+	Create(genesisBlock *common.Block) (PeerLedger, error) // 用给定的创世纪块创建Ledger
 	// Open opens an already created ledger
-	Open(ledgerID string) (PeerLedger, error)
+	Open(ledgerID string) (PeerLedger, error) // 打开已创建的Ledger
 	// Exists tells whether the ledger with given id exists
-	Exists(ledgerID string) (bool, error)
+	Exists(ledgerID string) (bool, error)		// 按ledgerID查Ledger是否存在
 	// List lists the ids of the existing ledgers
-	List() ([]string, error)
+	List() ([]string, error)					// 列出现有的ledgerID
 	// Close closes the PeerLedgerProvider
-	Close()
+	Close()										// 关闭 PeerLedgerProvider
 }
 
 // PeerLedger differs from the OrdererLedger in that PeerLedger locally maintain a bitmask
