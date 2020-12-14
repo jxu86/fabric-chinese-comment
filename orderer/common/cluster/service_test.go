@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
-	"github.com/hyperledger/fabric/core/comm"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/cluster/mocks"
-	"github.com/hyperledger/fabric/protos/orderer"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -59,7 +59,6 @@ var (
 )
 
 func TestStep(t *testing.T) {
-	t.Parallel()
 	dispatcher := &mocks.Dispatcher{}
 
 	svc := &cluster.Service{
@@ -93,7 +92,6 @@ func TestStep(t *testing.T) {
 }
 
 func TestSubmitSuccess(t *testing.T) {
-	t.Parallel()
 	dispatcher := &mocks.Dispatcher{}
 
 	stream := &mocks.StepStream{}
@@ -142,7 +140,6 @@ func (t tuple) asArray() []interface{} {
 }
 
 func TestSubmitFailure(t *testing.T) {
-	t.Parallel()
 	oops := errors.New("oops")
 	testCases := []struct {
 		name               string
@@ -196,8 +193,6 @@ func TestSubmitFailure(t *testing.T) {
 }
 
 func TestIngresStreamsMetrics(t *testing.T) {
-	t.Parallel()
-
 	dispatcher := &mocks.Dispatcher{}
 	dispatcher.On("DispatchConsensus", mock.Anything, mock.Anything).Return(nil)
 
@@ -233,7 +228,6 @@ func TestIngresStreamsMetrics(t *testing.T) {
 }
 
 func TestServiceGRPC(t *testing.T) {
-	t.Parallel()
 	// Check that Service correctly implements the gRPC interface
 	srv, err := comm.NewGRPCServer("127.0.0.1:0", comm.ServerConfig{})
 	assert.NoError(t, err)
@@ -244,8 +238,6 @@ func TestServiceGRPC(t *testing.T) {
 }
 
 func TestExpirationWarningIngress(t *testing.T) {
-	t.Parallel()
-
 	ca, err := tlsgen.NewCA()
 	assert.NoError(t, err)
 
@@ -278,7 +270,7 @@ func TestExpirationWarningIngress(t *testing.T) {
 	}))
 
 	srvConf := comm.ServerConfig{
-		SecOpts: &comm.SecureOptions{
+		SecOpts: comm.SecureOptions{
 			Certificate:       serverCert.Cert,
 			Key:               serverCert.Key,
 			UseTLS:            true,
@@ -295,7 +287,7 @@ func TestExpirationWarningIngress(t *testing.T) {
 
 	clientConf := comm.ClientConfig{
 		Timeout: time.Second * 3,
-		SecOpts: &comm.SecureOptions{
+		SecOpts: comm.SecureOptions{
 			ServerRootCAs:     [][]byte{ca.CertBytes()},
 			UseTLS:            true,
 			Key:               clientCert.Key,
@@ -307,7 +299,7 @@ func TestExpirationWarningIngress(t *testing.T) {
 	client, err := comm.NewGRPCClient(clientConf)
 	assert.NoError(t, err)
 
-	conn, err := client.NewConnection(srv.Address(), "")
+	conn, err := client.NewConnection(srv.Address())
 	assert.NoError(t, err)
 
 	cl := orderer.NewClusterClient(conn)

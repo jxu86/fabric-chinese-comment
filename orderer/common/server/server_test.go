@@ -7,7 +7,6 @@ SPDX-License-Identifier: Apache-2.0
 package server
 
 import (
-	"context"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -15,14 +14,13 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	ab "github.com/hyperledger/fabric-protos-go/orderer"
 	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/common/multichannel"
-	cb "github.com/hyperledger/fabric/protos/common"
-	ab "github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/peer"
 )
 
 func TestBroadcastNoPanic(t *testing.T) {
@@ -39,27 +37,25 @@ type recvr interface {
 	Recv() (*cb.Envelope, error)
 }
 
-type mockSrv struct {
+type mockBroadcastSrv struct {
 	grpc.ServerStream
 	msg *cb.Envelope
 	err error
 }
-
-func (mockSrv) Context() context.Context {
-	return peer.NewContext(context.Background(), &peer.Peer{})
-}
-
-type mockBroadcastSrv mockSrv
 
 func (mbs *mockBroadcastSrv) Recv() (*cb.Envelope, error) {
 	return mbs.msg, mbs.err
 }
 
 func (mbs *mockBroadcastSrv) Send(br *ab.BroadcastResponse) error {
-	panic("Unimplimented")
+	panic("Unimplemented")
 }
 
-type mockDeliverSrv mockSrv
+type mockDeliverSrv struct {
+	grpc.ServerStream
+	msg *cb.Envelope
+	err error
+}
 
 func (mds *mockDeliverSrv) CreateStatusReply(status cb.Status) proto.Message {
 	return &ab.DeliverResponse{
@@ -78,7 +74,7 @@ func (mds *mockDeliverSrv) Recv() (*cb.Envelope, error) {
 }
 
 func (mds *mockDeliverSrv) Send(br *ab.DeliverResponse) error {
-	panic("Unimplimented")
+	panic("Unimplemented")
 }
 
 func testMsgTrace(handler func(dir string, msg *cb.Envelope) recvr, t *testing.T) {
@@ -115,7 +111,7 @@ func testMsgTrace(handler func(dir string, msg *cb.Envelope) recvr, t *testing.T
 		}
 	}
 
-	assert.Equal(t, utils.MarshalOrPanic(msg), fileData)
+	assert.Equal(t, protoutil.MarshalOrPanic(msg), fileData)
 }
 
 func TestBroadcastMsgTrace(t *testing.T) {

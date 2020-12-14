@@ -13,15 +13,15 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestNewEndorserMetrics(t *testing.T) {
+func TestNewMetrics(t *testing.T) {
 	gt := NewGomegaWithT(t)
 
 	provider := &metricsfakes.Provider{}
 	provider.NewHistogramReturns(&metricsfakes.Histogram{})
 	provider.NewCounterReturns(&metricsfakes.Counter{})
 
-	endorserMetrics := NewEndorserMetrics(provider)
-	gt.Expect(endorserMetrics).To(Equal(&EndorserMetrics{
+	endorserMetrics := NewMetrics(provider)
+	gt.Expect(endorserMetrics).To(Equal(&Metrics{
 		ProposalDuration:         &metricsfakes.Histogram{},
 		ProposalsReceived:        &metricsfakes.Counter{},
 		SuccessfulProposals:      &metricsfakes.Counter{},
@@ -30,6 +30,7 @@ func TestNewEndorserMetrics(t *testing.T) {
 		InitFailed:               &metricsfakes.Counter{},
 		EndorsementsFailed:       &metricsfakes.Counter{},
 		DuplicateTxsFailure:      &metricsfakes.Counter{},
+		SimulationFailure:        &metricsfakes.Counter{},
 	}))
 
 	gt.Expect(provider.NewHistogramCallCount()).To(Equal(1))
@@ -37,7 +38,7 @@ func TestNewEndorserMetrics(t *testing.T) {
 		{proposalDurationHistogramOpts},
 	}))
 
-	gt.Expect(provider.NewCounterCallCount()).To(Equal(7))
+	gt.Expect(provider.NewCounterCallCount()).To(Equal(8))
 	gt.Expect(provider.Invocations()["NewCounter"]).To(ConsistOf([][]interface{}{
 		{receivedProposalsCounterOpts},
 		{successfulProposalsCounterOpts},
@@ -46,5 +47,6 @@ func TestNewEndorserMetrics(t *testing.T) {
 		{initFailureCounterOpts},
 		{endorsementFailureCounterOpts},
 		{duplicateTxsFailureCounterOpts},
+		{simulationFailureCounterOpts},
 	}))
 }

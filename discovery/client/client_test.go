@@ -19,21 +19,23 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/cauthdsl"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/discovery"
+	"github.com/hyperledger/fabric-protos-go/gossip"
+	"github.com/hyperledger/fabric-protos-go/msp"
+	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/chaincode"
 	"github.com/hyperledger/fabric/common/policies"
+	"github.com/hyperledger/fabric/common/policydsl"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/core/comm"
 	fabricdisc "github.com/hyperledger/fabric/discovery"
 	"github.com/hyperledger/fabric/discovery/endorsement"
 	"github.com/hyperledger/fabric/gossip/api"
 	gossipcommon "github.com/hyperledger/fabric/gossip/common"
 	gdisc "github.com/hyperledger/fabric/gossip/discovery"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/discovery"
-	"github.com/hyperledger/fabric/protos/gossip"
-	"github.com/hyperledger/fabric/protos/msp"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/gossip/protoext"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -280,7 +282,7 @@ func createGRPCServer(t *testing.T) *comm.GRPCServer {
 	serverCert := loadFileOrPanic(filepath.Join("testdata", "server", "cert.pem"))
 	serverKey := loadFileOrPanic(filepath.Join("testdata", "server", "key.pem"))
 	s, err := comm.NewGRPCServer("localhost:0", comm.ServerConfig{
-		SecOpts: &comm.SecureOptions{
+		SecOpts: comm.SecureOptions{
 			UseTLS:      true,
 			Certificate: serverCert,
 			Key:         serverKey,
@@ -315,7 +317,7 @@ func createDiscoveryService(sup *mockSupport) discovery.DiscoveryServer {
 	pe := &principalEvaluator{}
 	pf := &policyFetcher{}
 
-	sigPol, _ := cauthdsl.FromString("OR(AND('A.member', 'B.member'), 'C.member', AND('A.member', 'D.member'))")
+	sigPol, _ := policydsl.FromString("OR(AND('A.member', 'B.member'), 'C.member', AND('A.member', 'D.member'))")
 	polBytes, _ := proto.Marshal(sigPol)
 	mdf.On("Metadata", "mycc").Return(&chaincode.Metadata{
 		Policy:  polBytes,
@@ -324,11 +326,11 @@ func createDiscoveryService(sup *mockSupport) discovery.DiscoveryServer {
 		Id:      []byte{1, 2, 3},
 	})
 
-	pf.On("PolicyByChaincode", "mycc").Return(&inquireablePolicy{
+	pf.On("PoliciesByChaincode", "mycc").Return(&inquireablePolicy{
 		orgCombinations: orgCombinationsThatSatisfyPolicy,
 	})
 
-	sigPol, _ = cauthdsl.FromString("AND('B.member', 'C.member')")
+	sigPol, _ = policydsl.FromString("AND('B.member', 'C.member')")
 	polBytes, _ = proto.Marshal(sigPol)
 	mdf.On("Metadata", "mycc2").Return(&chaincode.Metadata{
 		Policy:  polBytes,
@@ -340,11 +342,11 @@ func createDiscoveryService(sup *mockSupport) discovery.DiscoveryServer {
 		}),
 	})
 
-	pf.On("PolicyByChaincode", "mycc2").Return(&inquireablePolicy{
+	pf.On("PoliciesByChaincode", "mycc2").Return(&inquireablePolicy{
 		orgCombinations: orgCombinationsThatSatisfyPolicy2,
 	})
 
-	sigPol, _ = cauthdsl.FromString("AND('A.member', 'B.member', 'C.member', 'D.member')")
+	sigPol, _ = policydsl.FromString("AND('A.member', 'B.member', 'C.member', 'D.member')")
 	polBytes, _ = proto.Marshal(sigPol)
 	mdf.On("Metadata", "mycc3").Return(&chaincode.Metadata{
 		Policy:  polBytes,
@@ -353,7 +355,7 @@ func createDiscoveryService(sup *mockSupport) discovery.DiscoveryServer {
 		Id:      []byte{1, 2, 3},
 	})
 
-	pf.On("PolicyByChaincode", "mycc3").Return(&inquireablePolicy{
+	pf.On("PoliciesByChaincode", "mycc3").Return(&inquireablePolicy{
 		orgCombinations: [][]string{{"A", "B", "C", "D"}},
 	})
 
@@ -712,7 +714,7 @@ func TestAddEndorsersQueryInvalidInput(t *testing.T) {
 
 func TestValidateAliveMessage(t *testing.T) {
 	am := aliveMessage(1)
-	msg, _ := am.ToGossipMessage()
+	msg, _ := protoext.EnvelopeToGossipMessage(am)
 
 	// Scenario I: Valid alive message
 	assert.NoError(t, validateAliveMessage(msg))
@@ -796,7 +798,7 @@ type ccMetadataFetcher struct {
 	mock.Mock
 }
 
-func (mdf *ccMetadataFetcher) Metadata(channel string, cc string, _ bool) *chaincode.Metadata {
+func (mdf *ccMetadataFetcher) Metadata(channel string, cc string, _ ...string) *chaincode.Metadata {
 	return mdf.Called(cc).Get(0).(*chaincode.Metadata)
 }
 
@@ -818,14 +820,14 @@ type policyFetcher struct {
 	mock.Mock
 }
 
-func (pf *policyFetcher) PolicyByChaincode(channel string, cc string) policies.InquireablePolicy {
-	return pf.Called(cc).Get(0).(policies.InquireablePolicy)
+func (pf *policyFetcher) PoliciesByChaincode(channel string, cc string, collections ...string) []policies.InquireablePolicy {
+	return []policies.InquireablePolicy{pf.Called(cc).Get(0).(policies.InquireablePolicy)}
 }
 
 type endorsementAnalyzer interface {
-	PeersForEndorsement(chainID gossipcommon.ChainID, interest *discovery.ChaincodeInterest) (*discovery.EndorsementDescriptor, error)
+	PeersForEndorsement(chainID gossipcommon.ChannelID, interest *discovery.ChaincodeInterest) (*discovery.EndorsementDescriptor, error)
 
-	PeersAuthorizedByCriteria(chainID gossipcommon.ChainID, interest *discovery.ChaincodeInterest) (gdisc.Members, error)
+	PeersAuthorizedByCriteria(chainID gossipcommon.ChannelID, interest *discovery.ChaincodeInterest) (gdisc.Members, error)
 }
 
 type inquireablePolicy struct {
@@ -836,7 +838,7 @@ type inquireablePolicy struct {
 func (ip *inquireablePolicy) appendPrincipal(orgName string) {
 	ip.principals = append(ip.principals, &msp.MSPPrincipal{
 		PrincipalClassification: msp.MSPPrincipal_ROLE,
-		Principal:               utils.MarshalOrPanic(&msp.MSPRole{Role: msp.MSPRole_MEMBER, MspIdentifier: orgName})})
+		Principal:               protoutil.MarshalOrPanic(&msp.MSPRole{Role: msp.MSPRole_MEMBER, MspIdentifier: orgName})})
 }
 
 func (ip *inquireablePolicy) SatisfiedBy() []policies.PrincipalSet {
@@ -885,7 +887,7 @@ func aliveMessage(id int) *gossip.Envelope {
 			},
 		},
 	}
-	sMsg, _ := g.NoopSign()
+	sMsg, _ := protoext.NoopSign(g)
 	return sMsg.Envelope
 }
 
@@ -908,7 +910,7 @@ func stateInfoMessageWithHeight(ledgerHeight uint64, chaincodes ...*gossip.Chain
 			},
 		},
 	}
-	sMsg, _ := g.NoopSign()
+	sMsg, _ := protoext.NoopSign(g)
 	return sMsg.Envelope
 }
 
@@ -947,7 +949,7 @@ func (*mockSupport) ChannelExists(channel string) bool {
 	return true
 }
 
-func (ms *mockSupport) PeersOfChannel(gossipcommon.ChainID) gdisc.Members {
+func (ms *mockSupport) PeersOfChannel(gossipcommon.ChannelID) gdisc.Members {
 	return ms.Called().Get(0).(gdisc.Members)
 }
 
@@ -955,15 +957,15 @@ func (ms *mockSupport) Peers() gdisc.Members {
 	return ms.Called().Get(0).(gdisc.Members)
 }
 
-func (ms *mockSupport) PeersForEndorsement(channel gossipcommon.ChainID, interest *discovery.ChaincodeInterest) (*discovery.EndorsementDescriptor, error) {
+func (ms *mockSupport) PeersForEndorsement(channel gossipcommon.ChannelID, interest *discovery.ChaincodeInterest) (*discovery.EndorsementDescriptor, error) {
 	return ms.endorsementAnalyzer.PeersForEndorsement(channel, interest)
 }
 
-func (ms *mockSupport) PeersAuthorizedByCriteria(channel gossipcommon.ChainID, interest *discovery.ChaincodeInterest) (gdisc.Members, error) {
+func (ms *mockSupport) PeersAuthorizedByCriteria(channel gossipcommon.ChannelID, interest *discovery.ChaincodeInterest) (gdisc.Members, error) {
 	return ms.endorsementAnalyzer.PeersAuthorizedByCriteria(channel, interest)
 }
 
-func (*mockSupport) EligibleForService(channel string, data common.SignedData) error {
+func (*mockSupport) EligibleForService(channel string, data protoutil.SignedData) error {
 	return nil
 }
 
@@ -1037,15 +1039,15 @@ func interest(ccNames ...string) *discovery.ChaincodeInterest {
 	return interest
 }
 
-func buildCollectionConfig(col2principals map[string][]*msp.MSPPrincipal) []byte {
-	collections := &common.CollectionConfigPackage{}
+func buildCollectionConfig(col2principals map[string][]*msp.MSPPrincipal) *peer.CollectionConfigPackage {
+	collections := &peer.CollectionConfigPackage{}
 	for col, principals := range col2principals {
-		collections.Config = append(collections.Config, &common.CollectionConfig{
-			Payload: &common.CollectionConfig_StaticCollectionConfig{
-				StaticCollectionConfig: &common.StaticCollectionConfig{
+		collections.Config = append(collections.Config, &peer.CollectionConfig{
+			Payload: &peer.CollectionConfig_StaticCollectionConfig{
+				StaticCollectionConfig: &peer.StaticCollectionConfig{
 					Name: col,
-					MemberOrgsPolicy: &common.CollectionPolicyConfig{
-						Payload: &common.CollectionPolicyConfig_SignaturePolicy{
+					MemberOrgsPolicy: &peer.CollectionPolicyConfig{
+						Payload: &peer.CollectionPolicyConfig_SignaturePolicy{
 							SignaturePolicy: &common.SignaturePolicyEnvelope{
 								Identities: principals,
 							},
@@ -1055,13 +1057,13 @@ func buildCollectionConfig(col2principals map[string][]*msp.MSPPrincipal) []byte
 			},
 		})
 	}
-	return utils.MarshalOrPanic(collections)
+	return collections
 }
 
 func memberPrincipal(mspID string) *msp.MSPPrincipal {
 	return &msp.MSPPrincipal{
 		PrincipalClassification: msp.MSPPrincipal_ROLE,
-		Principal: utils.MarshalOrPanic(&msp.MSPRole{
+		Principal: protoutil.MarshalOrPanic(&msp.MSPRole{
 			MspIdentifier: mspID,
 			Role:          msp.MSPRole_MEMBER,
 		}),
@@ -1080,10 +1082,6 @@ type ledgerHeightFilter struct {
 func (f *ledgerHeightFilter) Filter(endorsers Endorsers) Endorsers {
 	if len(endorsers) <= 1 {
 		return endorsers
-	}
-
-	if f.threshold < 0 {
-		return endorsers.Shuffle()
 	}
 
 	maxHeight := getMaxLedgerHeight(endorsers)

@@ -7,9 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 package cluster_test
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"strings"
 	"sync"
@@ -17,31 +19,43 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/msp"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/flogging"
-	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	"github.com/hyperledger/fabric/common/policies"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/configtxgentest"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/core/comm"
+	"github.com/hyperledger/fabric/core/config/configtest"
+	"github.com/hyperledger/fabric/internal/configtxgen/encoder"
+	"github.com/hyperledger/fabric/internal/configtxgen/genesisconfig"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/cluster/mocks"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/msp"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
+//go:generate counterfeiter -o mocks/policy.go --fake-name Policy . policy
+
+type policy interface {
+	policies.Policy
+}
+
+//go:generate counterfeiter -o mocks/policy_manager.go --fake-name PolicyManager . policyManager
+
+type policyManager interface {
+	policies.Manager
+}
+
 func TestParallelStubActivation(t *testing.T) {
-	t.Parallel()
 	// Scenario: Activate the stub from different goroutines in parallel.
 	stub := &cluster.Stub{}
 	var wg sync.WaitGroup
@@ -71,17 +85,17 @@ func TestParallelStubActivation(t *testing.T) {
 }
 
 func TestDialerCustomKeepAliveOptions(t *testing.T) {
-	t.Parallel()
 	ca, err := tlsgen.NewCA()
 	assert.NoError(t, err)
 
 	clientKeyPair, err := ca.NewClientCertKeyPair()
+	assert.NoError(t, err)
 	clientConfig := comm.ClientConfig{
-		KaOpts: &comm.KeepaliveOptions{
+		KaOpts: comm.KeepaliveOptions{
 			ClientTimeout: time.Second * 12345,
 		},
 		Timeout: time.Millisecond * 100,
-		SecOpts: &comm.SecureOptions{
+		SecOpts: comm.SecureOptions{
 			RequireClientCert: true,
 			Key:               clientKeyPair.Key,
 			Certificate:       clientKeyPair.Cert,
@@ -91,14 +105,12 @@ func TestDialerCustomKeepAliveOptions(t *testing.T) {
 		},
 	}
 
-	dialer := &cluster.PredicateDialer{ClientConfig: clientConfig}
-	timeout := dialer.ClientConfig.KaOpts.ClientTimeout
+	dialer := &cluster.PredicateDialer{Config: clientConfig}
+	timeout := dialer.Config.KaOpts.ClientTimeout
 	assert.Equal(t, time.Second*12345, timeout)
 }
 
 func TestPredicateDialerUpdateRootCAs(t *testing.T) {
-	t.Parallel()
-
 	node1 := newTestNode(t)
 	defer node1.stop()
 
@@ -106,11 +118,11 @@ func TestPredicateDialerUpdateRootCAs(t *testing.T) {
 	assert.NoError(t, err)
 
 	dialer := &cluster.PredicateDialer{
-		ClientConfig: node1.clientConfig.Clone(),
+		Config: node1.clientConfig.Clone(),
 	}
-	dialer.ClientConfig.SecOpts.ServerRootCAs = [][]byte{anotherTLSCA.CertBytes()}
-	dialer.Timeout = time.Second
-	dialer.ClientConfig.AsyncConnect = false
+	dialer.Config.SecOpts.ServerRootCAs = [][]byte{anotherTLSCA.CertBytes()}
+	dialer.Config.Timeout = time.Second
+	dialer.Config.AsyncConnect = false
 
 	_, err = dialer.Dial(node1.srv.Address(), nil)
 	assert.Error(t, err)
@@ -133,11 +145,10 @@ func TestPredicateDialerUpdateRootCAs(t *testing.T) {
 }
 
 func TestDialerBadConfig(t *testing.T) {
-	t.Parallel()
 	emptyCertificate := []byte("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----")
 	dialer := &cluster.PredicateDialer{
-		ClientConfig: comm.ClientConfig{
-			SecOpts: &comm.SecureOptions{
+		Config: comm.ClientConfig{
+			SecOpts: comm.SecureOptions{
 				UseTLS:        true,
 				ServerRootCAs: [][]byte{emptyCertificate},
 			},
@@ -150,7 +161,6 @@ func TestDialerBadConfig(t *testing.T) {
 }
 
 func TestDERtoPEM(t *testing.T) {
-	t.Parallel()
 	ca, err := tlsgen.NewCA()
 	assert.NoError(t, err)
 	keyPair, err := ca.NewServerCertKeyPair("localhost")
@@ -159,12 +169,11 @@ func TestDERtoPEM(t *testing.T) {
 }
 
 func TestStandardDialer(t *testing.T) {
-	t.Parallel()
 	emptyCertificate := []byte("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----")
 	certPool := [][]byte{emptyCertificate}
-	config := comm.ClientConfig{SecOpts: &comm.SecureOptions{UseTLS: true, ServerRootCAs: certPool}}
+	config := comm.ClientConfig{SecOpts: comm.SecureOptions{UseTLS: true, ServerRootCAs: certPool}}
 	standardDialer := &cluster.StandardDialer{
-		ClientConfig: config,
+		Config: config,
 	}
 	_, err := standardDialer.Dial(cluster.EndpointCriteria{Endpoint: "127.0.0.1:8080", TLSRootCAs: certPool})
 	assert.EqualError(t,
@@ -217,9 +226,9 @@ func TestVerifyBlockSignature(t *testing.T) {
 			name:          "bad signature header",
 			errorContains: "failed unmarshaling signature header",
 			mutateBlock: func(block *common.Block) *common.Block {
-				metadata := utils.GetMetadataFromBlockOrPanic(block, common.BlockMetadataIndex_SIGNATURES)
+				metadata := protoutil.GetMetadataFromBlockOrPanic(block, common.BlockMetadataIndex_SIGNATURES)
 				metadata.Signatures[0].SignatureHeader = []byte{1, 2, 3}
-				block.Metadata.Metadata[common.BlockMetadataIndex_SIGNATURES] = utils.MarshalOrPanic(metadata)
+				block.Metadata.Metadata[common.BlockMetadataIndex_SIGNATURES] = protoutil.MarshalOrPanic(metadata)
 				return block
 			},
 		},
@@ -228,7 +237,7 @@ func TestVerifyBlockSignature(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			// Create a copy of the block
 			blockCopy := &common.Block{}
-			err := proto.Unmarshal(utils.MarshalOrPanic(block), blockCopy)
+			err := proto.Unmarshal(protoutil.MarshalOrPanic(block), blockCopy)
 			assert.NoError(t, err)
 			// Mutate the block to sabotage it
 			blockCopy = testCase.mutateBlock(blockCopy)
@@ -291,7 +300,7 @@ func TestVerifyBlockHash(t *testing.T) {
 			name: "prev hash mismatch",
 			errorContains: "block [12]'s hash " +
 				"(866351705f1c2f13e10d52ead9d0ca3b80689ede8cc8bf70a6d60c67578323f4) " +
-				"mismatches 13's prev block hash (07)",
+				"mismatches block [13]'s prev block hash (07)",
 			mutateBlockSequence: func(blockSequence []*common.Block) []*common.Block {
 				blockSequence[len(blockSequence)/2].Header.PreviousHash = []byte{7}
 				return blockSequence
@@ -317,8 +326,8 @@ func TestVerifyBlockHash(t *testing.T) {
 }
 
 func TestVerifyBlocks(t *testing.T) {
-	var sigSet1 []*common.SignedData
-	var sigSet2 []*common.SignedData
+	var sigSet1 []*protoutil.SignedData
+	var sigSet2 []*protoutil.SignedData
 
 	configEnvelope1 := &common.ConfigEnvelope{
 		Config: &common.Config{
@@ -332,10 +341,10 @@ func TestVerifyBlocks(t *testing.T) {
 	}
 	configTransaction := func(envelope *common.ConfigEnvelope) *common.Envelope {
 		return &common.Envelope{
-			Payload: utils.MarshalOrPanic(&common.Payload{
-				Data: utils.MarshalOrPanic(envelope),
+			Payload: protoutil.MarshalOrPanic(&common.Payload{
+				Data: protoutil.MarshalOrPanic(envelope),
 				Header: &common.Header{
-					ChannelHeader: utils.MarshalOrPanic(&common.ChannelHeader{
+					ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
 						Type: int32(common.HeaderType_CONFIG),
 					}),
 				},
@@ -344,10 +353,11 @@ func TestVerifyBlocks(t *testing.T) {
 	}
 
 	for _, testCase := range []struct {
-		name                string
-		configureVerifier   func(*mocks.BlockVerifier)
-		mutateBlockSequence func([]*common.Block) []*common.Block
-		expectedError       string
+		name                  string
+		configureVerifier     func(*mocks.BlockVerifier)
+		mutateBlockSequence   func([]*common.Block) []*common.Block
+		expectedError         string
+		verifierExpectedCalls int
 	}{
 		{
 			name: "empty sequence",
@@ -364,7 +374,7 @@ func TestVerifyBlocks(t *testing.T) {
 			},
 			expectedError: "block [74]'s hash " +
 				"(5cb4bd1b6a73f81afafd96387bb7ff4473c2425929d0862586f5fbfa12d762dd) " +
-				"mismatches 75's prev block hash (07)",
+				"mismatches block [75]'s prev block hash (07)",
 		},
 		{
 			name: "bad signature",
@@ -375,15 +385,16 @@ func TestVerifyBlocks(t *testing.T) {
 				var nilEnvelope *common.ConfigEnvelope
 				verifier.On("VerifyBlockSignature", mock.Anything, nilEnvelope).Return(errors.New("bad signature"))
 			},
-			expectedError: "bad signature",
+			expectedError:         "bad signature",
+			verifierExpectedCalls: 1,
 		},
 		{
 			name: "block that its type cannot be classified",
 			mutateBlockSequence: func(blockSequence []*common.Block) []*common.Block {
 				blockSequence[len(blockSequence)/2].Data = &common.BlockData{
-					Data: [][]byte{utils.MarshalOrPanic(&common.Envelope{})},
+					Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{})},
 				}
-				blockSequence[len(blockSequence)/2].Header.DataHash = blockSequence[len(blockSequence)/2].Data.Hash()
+				blockSequence[len(blockSequence)/2].Header.DataHash = protoutil.BlockDataHash(blockSequence[len(blockSequence)/2].Data)
 				assignHashes(blockSequence)
 				return blockSequence
 			},
@@ -395,15 +406,15 @@ func TestVerifyBlocks(t *testing.T) {
 				var err error
 				// Put a config transaction in block n / 4
 				blockSequence[len(blockSequence)/4].Data = &common.BlockData{
-					Data: [][]byte{utils.MarshalOrPanic(configTransaction(configEnvelope1))},
+					Data: [][]byte{protoutil.MarshalOrPanic(configTransaction(configEnvelope1))},
 				}
-				blockSequence[len(blockSequence)/4].Header.DataHash = blockSequence[len(blockSequence)/4].Data.Hash()
+				blockSequence[len(blockSequence)/4].Header.DataHash = protoutil.BlockDataHash(blockSequence[len(blockSequence)/4].Data)
 
 				// Put a config transaction in block n / 2
 				blockSequence[len(blockSequence)/2].Data = &common.BlockData{
-					Data: [][]byte{utils.MarshalOrPanic(configTransaction(configEnvelope2))},
+					Data: [][]byte{protoutil.MarshalOrPanic(configTransaction(configEnvelope2))},
 				}
-				blockSequence[len(blockSequence)/2].Header.DataHash = blockSequence[len(blockSequence)/2].Data.Hash()
+				blockSequence[len(blockSequence)/2].Header.DataHash = protoutil.BlockDataHash(blockSequence[len(blockSequence)/2].Data)
 
 				assignHashes(blockSequence)
 
@@ -420,20 +431,21 @@ func TestVerifyBlocks(t *testing.T) {
 				verifier.On("VerifyBlockSignature", sigSet1, nilEnvelope).Return(nil).Once()
 				// However, the second config block - validates incorrectly.
 				confEnv1 := &common.ConfigEnvelope{}
-				proto.Unmarshal(utils.MarshalOrPanic(configEnvelope1), confEnv1)
+				proto.Unmarshal(protoutil.MarshalOrPanic(configEnvelope1), confEnv1)
 				verifier.On("VerifyBlockSignature", sigSet2, confEnv1).Return(errors.New("bad signature")).Once()
 			},
-			expectedError: "bad signature",
+			expectedError:         "bad signature",
+			verifierExpectedCalls: 2,
 		},
 		{
-			name: "config block in the sequence needs to be verified, and it isproperly signed",
+			name: "config block in the sequence needs to be verified, and it is properly signed",
 			mutateBlockSequence: func(blockSequence []*common.Block) []*common.Block {
 				var err error
 				// Put a config transaction in block n / 4
 				blockSequence[len(blockSequence)/4].Data = &common.BlockData{
-					Data: [][]byte{utils.MarshalOrPanic(configTransaction(configEnvelope1))},
+					Data: [][]byte{protoutil.MarshalOrPanic(configTransaction(configEnvelope1))},
 				}
-				blockSequence[len(blockSequence)/4].Header.DataHash = blockSequence[len(blockSequence)/4].Data.Hash()
+				blockSequence[len(blockSequence)/4].Header.DataHash = protoutil.BlockDataHash(blockSequence[len(blockSequence)/4].Data)
 
 				assignHashes(blockSequence)
 
@@ -448,10 +460,52 @@ func TestVerifyBlocks(t *testing.T) {
 			configureVerifier: func(verifier *mocks.BlockVerifier) {
 				var nilEnvelope *common.ConfigEnvelope
 				confEnv1 := &common.ConfigEnvelope{}
-				proto.Unmarshal(utils.MarshalOrPanic(configEnvelope1), confEnv1)
+				proto.Unmarshal(protoutil.MarshalOrPanic(configEnvelope1), confEnv1)
 				verifier.On("VerifyBlockSignature", sigSet1, nilEnvelope).Return(nil).Once()
 				verifier.On("VerifyBlockSignature", sigSet2, confEnv1).Return(nil).Once()
 			},
+			// We have a single config block in the 'middle' of the chain, so we have 2 verifications total:
+			// The last block, and the config block.
+			verifierExpectedCalls: 2,
+		},
+		{
+			name: "last two blocks are config blocks, last block only verified once",
+			mutateBlockSequence: func(blockSequence []*common.Block) []*common.Block {
+				var err error
+				// Put a config transaction in block n-2 and in n-1
+				blockSequence[len(blockSequence)-2].Data = &common.BlockData{
+					Data: [][]byte{protoutil.MarshalOrPanic(configTransaction(configEnvelope1))},
+				}
+				blockSequence[len(blockSequence)-2].Header.DataHash = protoutil.BlockDataHash(blockSequence[len(blockSequence)-2].Data)
+
+				blockSequence[len(blockSequence)-1].Data = &common.BlockData{
+					Data: [][]byte{protoutil.MarshalOrPanic(configTransaction(configEnvelope2))},
+				}
+				blockSequence[len(blockSequence)-1].Header.DataHash = protoutil.BlockDataHash(blockSequence[len(blockSequence)-1].Data)
+
+				assignHashes(blockSequence)
+
+				sigSet1, err = cluster.SignatureSetFromBlock(blockSequence[len(blockSequence)-2])
+				assert.NoError(t, err)
+
+				sigSet2, err = cluster.SignatureSetFromBlock(blockSequence[len(blockSequence)-1])
+				assert.NoError(t, err)
+
+				return blockSequence
+			},
+			configureVerifier: func(verifier *mocks.BlockVerifier) {
+				var nilEnvelope *common.ConfigEnvelope
+				confEnv1 := &common.ConfigEnvelope{}
+				proto.Unmarshal(protoutil.MarshalOrPanic(configEnvelope1), confEnv1)
+				verifier.On("VerifyBlockSignature", sigSet1, nilEnvelope).Return(nil).Once()
+				// We ensure that the signature set of the last block is verified using the config envelope of the block
+				// before it.
+				verifier.On("VerifyBlockSignature", sigSet2, confEnv1).Return(nil).Once()
+				// Note that we do not record a call to verify the last block, with the config envelope extracted from the block itself.
+			},
+			// We have 2 config blocks, yet we only verify twice- the first config block, and the next config block, but no more,
+			// since the last block is a config block.
+			verifierExpectedCalls: 2,
 		},
 	} {
 		testCase := testCase
@@ -465,6 +519,8 @@ func TestVerifyBlocks(t *testing.T) {
 			err := cluster.VerifyBlocks(blockchain, verifier)
 			if testCase.expectedError != "" {
 				assert.EqualError(t, err, testCase.expectedError)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}
@@ -472,7 +528,7 @@ func TestVerifyBlocks(t *testing.T) {
 
 func assignHashes(blockchain []*common.Block) {
 	for i := 1; i < len(blockchain); i++ {
-		blockchain[i].Header.PreviousHash = blockchain[i-1].Header.Hash()
+		blockchain[i].Header.PreviousHash = protoutil.BlockHeaderHash(blockchain[i-1].Header)
 	}
 }
 
@@ -482,19 +538,19 @@ func createBlockChain(start, end uint64) []*common.Block {
 			Creator: []byte{1, 2, 3},
 			Nonce:   []byte{9, 5, 42, 66},
 		}
-		block := common.NewBlock(seq, nil)
+		block := protoutil.NewBlock(seq, nil)
 		blockSignature := &common.MetadataSignature{
-			SignatureHeader: utils.MarshalOrPanic(sHdr),
+			SignatureHeader: protoutil.MarshalOrPanic(sHdr),
 		}
-		block.Metadata.Metadata[common.BlockMetadataIndex_SIGNATURES] = utils.MarshalOrPanic(&common.Metadata{
+		block.Metadata.Metadata[common.BlockMetadataIndex_SIGNATURES] = protoutil.MarshalOrPanic(&common.Metadata{
 			Value: nil,
 			Signatures: []*common.MetadataSignature{
 				blockSignature,
 			},
 		})
 
-		txn := utils.MarshalOrPanic(&common.Envelope{
-			Payload: utils.MarshalOrPanic(&common.Payload{
+		txn := protoutil.MarshalOrPanic(&common.Envelope{
+			Payload: protoutil.MarshalOrPanic(&common.Payload{
 				Header: &common.Header{},
 			}),
 		})
@@ -505,7 +561,7 @@ func createBlockChain(start, end uint64) []*common.Block {
 	for seq := uint64(start); seq <= uint64(end); seq++ {
 		block := newBlock(seq)
 		block.Data.Data = append(block.Data.Data, make([]byte, 100))
-		block.Header.DataHash = block.Data.Hash()
+		block.Header.DataHash = protoutil.BlockDataHash(block.Data)
 		blockchain = append(blockchain, block)
 	}
 	assignHashes(blockchain)
@@ -517,10 +573,12 @@ func TestEndpointconfigFromConfigBlockGreenPath(t *testing.T) {
 		block, err := test.MakeGenesisBlock("mychannel")
 		assert.NoError(t, err)
 
+		cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+		assert.NoError(t, err)
 		// For a block that doesn't have per org endpoints,
 		// we take the global endpoints
 		injectGlobalOrdererEndpoint(t, block, "globalEndpoint")
-		endpointConfig, err := cluster.EndpointconfigFromConfigBlock(block)
+		endpointConfig, err := cluster.EndpointconfigFromConfigBlock(block, cryptoProvider)
 		assert.NoError(t, err)
 		assert.Len(t, endpointConfig, 1)
 		assert.Equal(t, "globalEndpoint", endpointConfig[0].Endpoint)
@@ -537,21 +595,25 @@ func TestEndpointconfigFromConfigBlockGreenPath(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Make a second config.
-		gConf := configtxgentest.Load(localconfig.SampleSingleMSPSoloProfile)
+		gConf := genesisconfig.Load(genesisconfig.SampleSingleMSPSoloProfile, configtest.GetDevConfigDir())
 		gConf.Orderer.Capabilities = map[string]bool{
-			capabilities.OrdererV1_4_2: true,
+			capabilities.OrdererV2_0: true,
 		}
 		channelGroup, err := encoder.NewChannelGroup(gConf)
 		assert.NoError(t, err)
-		bundle, err := channelconfig.NewBundle("mychannel", &common.Config{ChannelGroup: channelGroup})
+
+		cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+		assert.NoError(t, err)
+		bundle, err := channelconfig.NewBundle("mychannel", &common.Config{ChannelGroup: channelGroup}, cryptoProvider)
 		assert.NoError(t, err)
 
 		msps, err := bundle.MSPManager().GetMSPs()
 		assert.NoError(t, err)
 		caBytes := msps["SampleOrg"].GetTLSRootCerts()[0]
 
+		assert.NoError(t, err)
 		injectAdditionalTLSCAEndpointPair(t, block, "anotherEndpoint", caBytes, "fooOrg")
-		endpointConfig, err := cluster.EndpointconfigFromConfigBlock(block)
+		endpointConfig, err := cluster.EndpointconfigFromConfigBlock(block, cryptoProvider)
 		assert.NoError(t, err)
 		// And ensure that the endpoints that are taken, are the per org ones.
 		assert.Len(t, endpointConfig, 2)
@@ -576,14 +638,17 @@ func TestEndpointconfigFromConfigBlockGreenPath(t *testing.T) {
 }
 
 func TestEndpointconfigFromConfigBlockFailures(t *testing.T) {
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
 	t.Run("nil block", func(t *testing.T) {
-		certs, err := cluster.EndpointconfigFromConfigBlock(nil)
+		certs, err := cluster.EndpointconfigFromConfigBlock(nil, cryptoProvider)
 		assert.Nil(t, certs)
 		assert.EqualError(t, err, "nil block")
 	})
 
 	t.Run("nil block data", func(t *testing.T) {
-		certs, err := cluster.EndpointconfigFromConfigBlock(&common.Block{})
+		certs, err := cluster.EndpointconfigFromConfigBlock(&common.Block{}, cryptoProvider)
 		assert.Nil(t, certs)
 		assert.EqualError(t, err, "block data is nil")
 	})
@@ -591,7 +656,7 @@ func TestEndpointconfigFromConfigBlockFailures(t *testing.T) {
 	t.Run("no envelope", func(t *testing.T) {
 		certs, err := cluster.EndpointconfigFromConfigBlock(&common.Block{
 			Data: &common.BlockData{},
-		})
+		}, cryptoProvider)
 		assert.Nil(t, certs)
 		assert.EqualError(t, err, "envelope index out of bounds")
 	})
@@ -601,7 +666,7 @@ func TestEndpointconfigFromConfigBlockFailures(t *testing.T) {
 			Data: &common.BlockData{
 				Data: [][]byte{{}},
 			},
-		})
+		}, cryptoProvider)
 		assert.Nil(t, certs)
 		assert.EqualError(t, err, "failed extracting bundle from envelope: envelope header cannot be nil")
 	})
@@ -637,8 +702,8 @@ func TestConfigFromBlockBadInput(t *testing.T) {
 			name:          "bad genesis block",
 			expectedError: "invalid config envelope: proto: common.ConfigEnvelope: illegal tag 0 (wire type 1)",
 			block: &common.Block{
-				Header: &common.BlockHeader{}, Data: &common.BlockData{Data: [][]byte{utils.MarshalOrPanic(&common.Envelope{
-					Payload: utils.MarshalOrPanic(&common.Payload{
+				Header: &common.BlockHeader{}, Data: &common.BlockData{Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{
+					Payload: protoutil.MarshalOrPanic(&common.Payload{
 						Data: []byte{1, 2, 3},
 					}),
 				})}}},
@@ -651,7 +716,7 @@ func TestConfigFromBlockBadInput(t *testing.T) {
 		{
 			name:          "invalid payload in block envelope",
 			expectedError: "error unmarshaling Payload: proto: common.Payload: illegal tag 0 (wire type 1)",
-			block: &common.Block{Data: &common.BlockData{Data: [][]byte{utils.MarshalOrPanic(&common.Envelope{
+			block: &common.Block{Data: &common.BlockData{Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{
 				Payload: []byte{1, 2, 3},
 			})}}},
 		},
@@ -660,8 +725,8 @@ func TestConfigFromBlockBadInput(t *testing.T) {
 			expectedError: "error unmarshaling ChannelHeader: proto: common.ChannelHeader: illegal tag 0 (wire type 1)",
 			block: &common.Block{
 				Header: &common.BlockHeader{Number: 1},
-				Data: &common.BlockData{Data: [][]byte{utils.MarshalOrPanic(&common.Envelope{
-					Payload: utils.MarshalOrPanic(&common.Payload{
+				Data: &common.BlockData{Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{
+					Payload: protoutil.MarshalOrPanic(&common.Payload{
 						Header: &common.Header{
 							ChannelHeader: []byte{1, 2, 3},
 						},
@@ -673,11 +738,11 @@ func TestConfigFromBlockBadInput(t *testing.T) {
 			expectedError: "invalid config envelope: proto: common.ConfigEnvelope: illegal tag 0 (wire type 1)",
 			block: &common.Block{
 				Header: &common.BlockHeader{},
-				Data: &common.BlockData{Data: [][]byte{utils.MarshalOrPanic(&common.Envelope{
-					Payload: utils.MarshalOrPanic(&common.Payload{
+				Data: &common.BlockData{Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{
+					Payload: protoutil.MarshalOrPanic(&common.Payload{
 						Data: []byte{1, 2, 3},
 						Header: &common.Header{
-							ChannelHeader: utils.MarshalOrPanic(&common.ChannelHeader{
+							ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
 								Type: int32(common.HeaderType_CONFIG),
 							}),
 						},
@@ -694,11 +759,12 @@ func TestConfigFromBlockBadInput(t *testing.T) {
 }
 
 func TestBlockValidationPolicyVerifier(t *testing.T) {
-	t.Parallel()
-	config := configtxgentest.Load(localconfig.SampleInsecureSoloProfile)
+	config := genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile, configtest.GetDevConfigDir())
 	group, err := encoder.NewChannelGroup(config)
 	assert.NoError(t, err)
 	assert.NotNil(t, group)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
 
 	validConfigEnvelope := &common.ConfigEnvelope{
 		Config: &common.Config{
@@ -711,47 +777,52 @@ func TestBlockValidationPolicyVerifier(t *testing.T) {
 		expectedError string
 		envelope      *common.ConfigEnvelope
 		policyMap     map[string]policies.Policy
+		policy        policies.Policy
 	}{
+		/**
 		{
 			description:   "policy not found",
 			expectedError: "policy /Channel/Orderer/BlockValidation wasn't found",
 		},
+		*/
 		{
 			description:   "policy evaluation fails",
 			expectedError: "invalid signature",
-			policyMap: map[string]policies.Policy{
-				"/Channel/Orderer/BlockValidation": &mockpolicies.Policy{
-					Err: errors.New("invalid signature"),
+			policy: &mocks.Policy{
+				EvaluateSignedDataStub: func([]*protoutil.SignedData) error {
+					return errors.New("invalid signature")
 				},
 			},
 		},
 		{
 			description:   "bad config envelope",
 			expectedError: "config must contain a channel group",
-			policyMap: map[string]policies.Policy{
-				"/Channel/Orderer/BlockValidation": &mockpolicies.Policy{
-					Err: errors.New("invalid signature"),
-				},
-			},
-			envelope: &common.ConfigEnvelope{Config: &common.Config{}},
+			policy:        &mocks.Policy{},
+			envelope:      &common.ConfigEnvelope{Config: &common.Config{}},
 		},
 		{
 			description: "good config envelope overrides custom policy manager",
-			policyMap: map[string]policies.Policy{
-				"/Channel/Orderer/BlockValidation": &mockpolicies.Policy{
-					Err: errors.New("invalid signature"),
+			policy: &mocks.Policy{
+				EvaluateSignedDataStub: func([]*protoutil.SignedData) error {
+					return errors.New("invalid signature")
 				},
 			},
 			envelope: validConfigEnvelope,
 		},
 	} {
 		t.Run(testCase.description, func(t *testing.T) {
+			mockPolicyManager := &mocks.PolicyManager{}
+			if testCase.policy != nil {
+				mockPolicyManager.GetPolicyReturns(testCase.policy, true)
+			} else {
+				mockPolicyManager.GetPolicyReturns(nil, false)
+			}
+			mockPolicyManager.GetPolicyReturns(testCase.policy, true)
 			verifier := &cluster.BlockValidationPolicyVerifier{
-				Logger:  flogging.MustGetLogger("test"),
-				Channel: "mychannel",
-				PolicyMgr: &mockpolicies.Manager{
-					PolicyMap: testCase.policyMap,
-				},
+				Logger:    flogging.MustGetLogger("test"),
+				Channel:   "mychannel",
+				PolicyMgr: mockPolicyManager,
+				BCCSP:     cryptoProvider,
 			}
 
 			err := verifier.VerifyBlockSignature(nil, testCase.envelope)
@@ -765,14 +836,15 @@ func TestBlockValidationPolicyVerifier(t *testing.T) {
 }
 
 func TestBlockVerifierAssembler(t *testing.T) {
-	t.Parallel()
-	config := configtxgentest.Load(localconfig.SampleInsecureSoloProfile)
+	config := genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile, configtest.GetDevConfigDir())
 	group, err := encoder.NewChannelGroup(config)
 	assert.NoError(t, err)
 	assert.NotNil(t, group)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
 
 	t.Run("Good config envelope", func(t *testing.T) {
-		bva := &cluster.BlockVerifierAssembler{}
+		bva := &cluster.BlockVerifierAssembler{BCCSP: cryptoProvider}
 		verifier, err := bva.VerifierFromConfig(&common.ConfigEnvelope{
 			Config: &common.Config{
 				ChannelGroup: group,
@@ -784,7 +856,7 @@ func TestBlockVerifierAssembler(t *testing.T) {
 	})
 
 	t.Run("Bad config envelope", func(t *testing.T) {
-		bva := &cluster.BlockVerifierAssembler{}
+		bva := &cluster.BlockVerifierAssembler{BCCSP: cryptoProvider}
 		_, err := bva.VerifierFromConfig(&common.ConfigEnvelope{}, "mychannel")
 		assert.EqualError(t, err, "failed extracting bundle from envelope: channelconfig Config cannot be nil")
 	})
@@ -813,37 +885,16 @@ func TestLastConfigBlock(t *testing.T) {
 		},
 		{
 			name:           "nil metadata",
-			expectedError:  "no metadata in block",
+			expectedError:  "failed to retrieve metadata: no metadata in block",
 			blockRetriever: blockRetriever,
 			block:          &common.Block{},
-		},
-		{
-			name:           "no last config block metadata",
-			expectedError:  "no metadata in block",
-			blockRetriever: blockRetriever,
-			block: &common.Block{
-				Metadata: &common.BlockMetadata{
-					Metadata: [][]byte{{}},
-				},
-			},
-		},
-		{
-			name:           "bad metadata in block",
-			blockRetriever: blockRetriever,
-			expectedError: "error unmarshaling metadata from block at index " +
-				"[LAST_CONFIG]: proto: common.Metadata: illegal tag 0 (wire type 1)",
-			block: &common.Block{
-				Metadata: &common.BlockMetadata{
-					Metadata: [][]byte{{}, {1, 2, 3}},
-				},
-			},
 		},
 		{
 			name: "no block with index",
 			block: &common.Block{
 				Metadata: &common.BlockMetadata{
-					Metadata: [][]byte{{}, utils.MarshalOrPanic(&common.Metadata{
-						Value: utils.MarshalOrPanic(&common.LastConfig{Index: 666}),
+					Metadata: [][]byte{{}, protoutil.MarshalOrPanic(&common.Metadata{
+						Value: protoutil.MarshalOrPanic(&common.LastConfig{Index: 666}),
 					})},
 				},
 			},
@@ -854,8 +905,8 @@ func TestLastConfigBlock(t *testing.T) {
 			name: "valid last config block",
 			block: &common.Block{
 				Metadata: &common.BlockMetadata{
-					Metadata: [][]byte{{}, utils.MarshalOrPanic(&common.Metadata{
-						Value: utils.MarshalOrPanic(&common.LastConfig{Index: 42}),
+					Metadata: [][]byte{{}, protoutil.MarshalOrPanic(&common.Metadata{
+						Value: protoutil.MarshalOrPanic(&common.LastConfig{Index: 42}),
 					})},
 				},
 			},
@@ -877,8 +928,6 @@ func TestLastConfigBlock(t *testing.T) {
 }
 
 func TestVerificationRegistryRegisterVerifier(t *testing.T) {
-	t.Parallel()
-
 	blockBytes, err := ioutil.ReadFile("testdata/mychannel.block")
 	assert.NoError(t, err)
 
@@ -918,7 +967,6 @@ func TestVerificationRegistryRegisterVerifier(t *testing.T) {
 }
 
 func TestVerificationRegistry(t *testing.T) {
-	t.Parallel()
 	blockBytes, err := ioutil.ReadFile("testdata/mychannel.block")
 	assert.NoError(t, err)
 
@@ -1057,9 +1105,9 @@ func TestLedgerInterceptor(t *testing.T) {
 
 func injectAdditionalTLSCAEndpointPair(t *testing.T, block *common.Block, endpoint string, tlsCA []byte, orgName string) {
 	// Unwrap the layers until we reach the orderer addresses
-	env, err := utils.ExtractEnvelope(block, 0)
+	env, err := protoutil.ExtractEnvelope(block, 0)
 	assert.NoError(t, err)
-	payload, err := utils.GetPayload(env)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	assert.NoError(t, err)
 	confEnv, err := configtx.UnmarshalConfigEnvelope(payload.Data)
 	assert.NoError(t, err)
@@ -1090,8 +1138,8 @@ func injectAdditionalTLSCAEndpointPair(t *testing.T, block *common.Block, endpoi
 	fabricConfig.Name = orgName
 
 	// Pack the MSP config back into the config
-	secondOrdererConfig.Values[channelconfig.MSPKey].Value = utils.MarshalOrPanic(&msp.MSPConfig{
-		Config: utils.MarshalOrPanic(fabricConfig),
+	secondOrdererConfig.Values[channelconfig.MSPKey].Value = protoutil.MarshalOrPanic(&msp.MSPConfig{
+		Config: protoutil.MarshalOrPanic(fabricConfig),
 		Type:   mspConfig.Type,
 	})
 
@@ -1099,10 +1147,83 @@ func injectAdditionalTLSCAEndpointPair(t *testing.T, block *common.Block, endpoi
 	ordererOrgProtos := &common.OrdererAddresses{
 		Addresses: []string{endpoint},
 	}
-	secondOrdererConfig.Values[channelconfig.EndpointsKey].Value = utils.MarshalOrPanic(ordererOrgProtos)
+	secondOrdererConfig.Values[channelconfig.EndpointsKey].Value = protoutil.MarshalOrPanic(ordererOrgProtos)
 
 	// Fold everything back into the block
-	payload.Data = utils.MarshalOrPanic(confEnv)
-	env.Payload = utils.MarshalOrPanic(payload)
-	block.Data.Data[0] = utils.MarshalOrPanic(env)
+	payload.Data = protoutil.MarshalOrPanic(confEnv)
+	env.Payload = protoutil.MarshalOrPanic(payload)
+	block.Data.Data[0] = protoutil.MarshalOrPanic(env)
+}
+
+func TestEndpointCriteriaString(t *testing.T) {
+	// The top cert is the issuer of the bottom cert
+	certs := `-----BEGIN CERTIFICATE-----
+MIIBozCCAUigAwIBAgIQMXmzUnikiAZDr4VsrBL+rzAKBggqhkjOPQQDAjAxMS8w
+LQYDVQQFEyY2NTc2NDA3Njc5ODcwOTA3OTEwNDM5NzkxMTAwNzA0Mzk3Njg3OTAe
+Fw0xOTExMTEyMDM5MDRaFw0yOTExMDkyMDM5MDRaMDExLzAtBgNVBAUTJjY1NzY0
+MDc2Nzk4NzA5MDc5MTA0Mzk3OTExMDA3MDQzOTc2ODc5MFkwEwYHKoZIzj0CAQYI
+KoZIzj0DAQcDQgAEzBBkRvWgasCKf1pejwpOu+1Fv9FffOZMHnna/7lfMrAqOs8d
+HMDVU7mSexu7YNTpAwm4vkdHXi35H8zlVABTxaNCMEAwDgYDVR0PAQH/BAQDAgGm
+MB0GA1UdJQQWMBQGCCsGAQUFBwMCBggrBgEFBQcDATAPBgNVHRMBAf8EBTADAQH/
+MAoGCCqGSM49BAMCA0kAMEYCIQCXqXoYLAJN9diIdGxPlRQJgJLju4brWXZfyt3s
+E9TjFwIhAOuUJjcOchdP6UA9WLnVWciEo1Omf59NgfHL1gUPb/t6
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIBpDCCAUqgAwIBAgIRAIyvtL0z1xQ+NecXeH1HmmAwCgYIKoZIzj0EAwIwMTEv
+MC0GA1UEBRMmNjU3NjQwNzY3OTg3MDkwNzkxMDQzOTc5MTEwMDcwNDM5NzY4Nzkw
+HhcNMTkxMTExMjAzOTA0WhcNMTkxMTEyMjAzOTA0WjAyMTAwLgYDVQQFEycxODcw
+MDQyMzcxODQwMjY5Mzk2ODUxNzk1NzM3MzIyMTc2OTA3MjAwWTATBgcqhkjOPQIB
+BggqhkjOPQMBBwNCAARZBFDBOfC7T9RbsX+PgyE6sM7ocuwn6krIGjc00ICivFgQ
+qdHMU7hiswiYwSvwh9MDHlprCRW3ycSgEYQgKU5to0IwQDAOBgNVHQ8BAf8EBAMC
+BaAwHQYDVR0lBBYwFAYIKwYBBQUHAwIGCCsGAQUFBwMBMA8GA1UdEQQIMAaHBH8A
+AAEwCgYIKoZIzj0EAwIDSAAwRQIhAK6G7qr/ClszCFP25gsflA31+7eoss5vi3o4
+qz8bY+s6AiBvO0aOfE8M4ibjmRE4vSXo0+gkOIJKqZcmiRdnJSr8Xw==
+-----END CERTIFICATE-----`
+
+	epc := cluster.EndpointCriteria{
+		Endpoint:   "orderer.example.com:7050",
+		TLSRootCAs: [][]byte{[]byte(certs)},
+	}
+
+	actual := fmt.Sprint(epc)
+	expected := `{"CAs":[{"Expired":false,"Issuer":"self","Subject":"SERIALNUMBER=65764076798709079104397911007043976879"},{"Expired":true,"Issuer":"SERIALNUMBER=65764076798709079104397911007043976879","Subject":"SERIALNUMBER=187004237184026939685179573732217690720"}],"Endpoint":"orderer.example.com:7050"}`
+	assert.Equal(t, expected, actual)
+}
+
+func TestComparisonMemoizer(t *testing.T) {
+	var invocations int
+
+	m := &cluster.ComparisonMemoizer{
+		MaxEntries: 5,
+		F: func(a, b []byte) bool {
+			invocations++
+			return bytes.Equal(a, b)
+		},
+	}
+
+	// Warm-up cache
+	for i := 0; i < 5; i++ {
+		notSame := m.Compare([]byte{byte(i)}, []byte{1, 2, 3})
+		require.False(t, notSame)
+		require.Equal(t, i+1, invocations)
+	}
+
+	// Ensure lookups are cached
+	for i := 0; i < 5; i++ {
+		notSame := m.Compare([]byte{byte(i)}, []byte{1, 2, 3})
+		require.False(t, notSame)
+		require.Equal(t, 5, invocations)
+	}
+
+	// Put a new entry which will cause a cache miss
+	same := m.Compare([]byte{5}, []byte{5})
+	require.True(t, same)
+	require.Equal(t, 6, invocations)
+
+	// Keep adding more and more elements to the cache and ensure it stays smaller than its size
+	for i := 0; i < 20; i++ {
+		odd := m.Compare([]byte{byte(1)}, []byte{byte(i % 2)})
+		require.Equal(t, i%2 != 0, odd)
+		require.LessOrEqual(t, m.Size(), int(m.MaxEntries))
+	}
 }

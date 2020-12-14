@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package signer
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
@@ -15,10 +16,10 @@ import (
 	"io/ioutil"
 	"math/big"
 
+	"github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric/bccsp/utils"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/protos/msp"
-	proto_utils "github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
@@ -37,6 +38,10 @@ type Config struct {
 type Signer struct {
 	key     *ecdsa.PrivateKey
 	Creator []byte
+}
+
+func (si *Signer) Serialize() ([]byte, error) {
+	return si.Creator, nil
 }
 
 // NewSigner creates a new Signer out of the given configuration
@@ -64,7 +69,7 @@ func serializeIdentity(clientCert string, mspID string) ([]byte, error) {
 		Mspid:   mspID,
 		IdBytes: b,
 	}
-	return proto_utils.MarshalOrPanic(sId), nil
+	return protoutil.MarshalOrPanic(sId), nil
 }
 
 func (si *Signer) Sign(msg []byte) ([]byte, error) {
@@ -81,11 +86,33 @@ func loadPrivateKey(file string) (*ecdsa.PrivateKey, error) {
 	if bl == nil {
 		return nil, errors.Errorf("failed to decode PEM block from %s", file)
 	}
-	key, err := x509.ParsePKCS8PrivateKey(bl.Bytes)
+	key, err := parsePrivateKey(bl.Bytes)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to parse private key from %s", file)
+		return nil, err
 	}
 	return key.(*ecdsa.PrivateKey), nil
+}
+
+// Based on crypto/tls/tls.go but modified for Fabric:
+func parsePrivateKey(der []byte) (crypto.PrivateKey, error) {
+	// OpenSSL 1.0.0 generates PKCS#8 keys.
+	if key, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		switch key := key.(type) {
+		// Fabric only supports ECDSA at the moment.
+		case *ecdsa.PrivateKey:
+			return key, nil
+		default:
+			return nil, errors.Errorf("found unknown private key type (%T) in PKCS#8 wrapping", key)
+		}
+	}
+
+	// OpenSSL ecparam generates SEC1 EC private keys for ECDSA.
+	key, err := x509.ParseECPrivateKey(der)
+	if err != nil {
+		return nil, errors.Errorf("failed to parse private key: %v", err)
+	}
+
+	return key, nil
 }
 
 func signECDSA(k *ecdsa.PrivateKey, digest []byte) (signature []byte, err error) {
@@ -94,7 +121,7 @@ func signECDSA(k *ecdsa.PrivateKey, digest []byte) (signature []byte, err error)
 		return nil, err
 	}
 
-	s, _, err = utils.ToLowS(&k.PublicKey, s)
+	s, err = utils.ToLowS(&k.PublicKey, s)
 	if err != nil {
 		return nil, err
 	}

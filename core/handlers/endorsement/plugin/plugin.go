@@ -10,9 +10,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hyperledger/fabric-protos-go/peer"
 	. "github.com/hyperledger/fabric/core/handlers/endorsement/api"
 	. "github.com/hyperledger/fabric/core/handlers/endorsement/api/identities"
-	"github.com/hyperledger/fabric/protos/peer"
 )
 
 // To build the plugin,
@@ -42,18 +42,18 @@ type DefaultEndorsement struct {
 func (e *DefaultEndorsement) Endorse(prpBytes []byte, sp *peer.SignedProposal) (*peer.Endorsement, []byte, error) {
 	signer, err := e.SigningIdentityForRequest(sp)
 	if err != nil {
-		return nil, nil, errors.New(fmt.Sprintf("failed fetching signing identity: %v", err))
+		return nil, nil, fmt.Errorf("failed fetching signing identity: %v", err)
 	}
 	// serialize the signing identity
 	identityBytes, err := signer.Serialize()
 	if err != nil {
-		return nil, nil, errors.New(fmt.Sprintf("could not serialize the signing identity: %v", err))
+		return nil, nil, fmt.Errorf("could not serialize the signing identity: %v", err)
 	}
 
 	// sign the concatenation of the proposal response and the serialized endorser identity with this endorser's key
 	signature, err := signer.Sign(append(prpBytes, identityBytes...))
 	if err != nil {
-		return nil, nil, errors.New(fmt.Sprintf("could not sign the proposal response payload: %v", err))
+		return nil, nil, fmt.Errorf("could not sign the proposal response payload: %v", err)
 	}
 	endorsement := &peer.Endorsement{Signature: signature, Endorser: identityBytes}
 	return endorsement, prpBytes, nil

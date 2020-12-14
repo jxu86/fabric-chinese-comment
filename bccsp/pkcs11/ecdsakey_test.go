@@ -17,9 +17,6 @@ import (
 )
 
 func TestX509PublicKeyImportOptsKeyImporter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping TestX509PublicKeyImportOptsKeyImporter")
-	}
 	ki := currentBCCSP
 
 	_, err := ki.KeyImport("Hello World", &bccsp.X509PublicKeyImportOpts{})
@@ -34,5 +31,5 @@ func TestX509PublicKeyImportOptsKeyImporter(t *testing.T) {
 	cert.PublicKey = "Hello world"
 	_, err = ki.KeyImport(cert, &bccsp.X509PublicKeyImportOpts{})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "Certificate's public key type not recognized. Supported keys: [ECDSA, RSA]")
+	assert.Contains(t, err.Error(), "Certificate's public key type not recognized. Supported keys: [ECDSA]")
 }

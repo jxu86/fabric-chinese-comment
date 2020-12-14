@@ -14,17 +14,19 @@ import (
 	"testing"
 	"time"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
-	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/gossip/api"
 	gcomm "github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/gossip/algo"
 	"github.com/hyperledger/fabric/gossip/gossip/channel"
 	"github.com/hyperledger/fabric/gossip/metrics"
+	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
-	proto "github.com/hyperledger/fabric/protos/gossip"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -34,6 +36,7 @@ func init() {
 }
 
 type configurableCryptoService struct {
+	sync.RWMutex
 	m map[string]api.OrgIdentityType
 }
 
@@ -43,19 +46,23 @@ func (c *configurableCryptoService) Expiration(peerIdentity api.PeerIdentityType
 
 func (c *configurableCryptoService) putInOrg(port int, org string) {
 	identity := fmt.Sprintf("127.0.0.1:%d", port)
+	c.Lock()
 	c.m[identity] = api.OrgIdentityType(org)
+	c.Unlock()
 }
 
 // OrgByPeerIdentity returns the OrgIdentityType
 // of a given peer identity
 func (c *configurableCryptoService) OrgByPeerIdentity(identity api.PeerIdentityType) api.OrgIdentityType {
+	c.RLock()
 	org := c.m[string(identity)]
+	c.RUnlock()
 	return org
 }
 
 // VerifyByChannel verifies a peer's signature on a message in the context
 // of a specific channel
-func (c *configurableCryptoService) VerifyByChannel(_ common.ChainID, identity api.PeerIdentityType, _, _ []byte) error {
+func (c *configurableCryptoService) VerifyByChannel(_ common.ChannelID, identity api.PeerIdentityType, _, _ []byte) error {
 	return nil
 }
 
@@ -70,7 +77,7 @@ func (*configurableCryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityTy
 
 // VerifyBlock returns nil if the block is properly signed,
 // else returns error
-func (*configurableCryptoService) VerifyBlock(chainID common.ChainID, seqNum uint64, signedBlock []byte) error {
+func (*configurableCryptoService) VerifyBlock(channelID common.ChannelID, seqNum uint64, signedBlock *cb.Block) error {
 	return nil
 }
 
@@ -95,11 +102,11 @@ func (*configurableCryptoService) Verify(peerIdentity api.PeerIdentityType, sign
 
 func newGossipInstanceWithGRPCWithExternalEndpoint(id int, port int, gRPCServer *comm.GRPCServer,
 	certs *common.TLSCertificates, secureDialOpts api.PeerSecureDialOpts, mcs *configurableCryptoService,
-	externalEndpoint string, boot ...int) Gossip {
+	externalEndpoint string, boot ...int) *gossipGRPC {
 	conf := &Config{
 		BootstrapPeers:               bootPeersWithPorts(boot...),
 		ID:                           fmt.Sprintf("p%d", id),
-		MaxBlockCountToStore:         100,
+		MaxBlockCountToStore:         10,
 		MaxPropagationBurstLatency:   time.Duration(500) * time.Millisecond,
 		MaxPropagationBurstSize:      20,
 		PropagateIterations:          1,
@@ -125,21 +132,21 @@ func newGossipInstanceWithGRPCWithExternalEndpoint(id int, port int, gRPCServer 
 		AliveExpirationTimeout:       discoveryConfig.AliveExpirationTimeout,
 		AliveExpirationCheckInterval: discoveryConfig.AliveExpirationCheckInterval,
 		ReconnectInterval:            discoveryConfig.ReconnectInterval,
+		MaxConnectionAttempts:        discoveryConfig.MaxConnectionAttempts,
+		MsgExpirationFactor:          discoveryConfig.MsgExpirationFactor,
 	}
 	selfID := api.PeerIdentityType(conf.InternalEndpoint)
-	g := NewGossipService(conf, gRPCServer.Server(), mcs, mcs, selfID,
-		secureDialOpts, metrics.NewGossipMetrics(&disabled.Provider{}))
+	g := New(conf, gRPCServer.Server(), mcs, mcs, selfID,
+		secureDialOpts, metrics.NewGossipMetrics(&disabled.Provider{}), nil)
 	go func() {
 		gRPCServer.Start()
 	}()
-	return &gossipGRPC{gossipServiceImpl: g.(*gossipServiceImpl), grpc: gRPCServer}
+	return &gossipGRPC{Node: g, grpc: gRPCServer}
 }
 
 func TestMultipleOrgEndpointLeakage(t *testing.T) {
-	t.Parallel()
-	defer testWG.Done()
 	// Scenario: create 2 organizations, each with 5 peers.
-	// The first org will have an anchor peer, but the second won't.
+	// Both organizations will have an anchor peer each
 	// The first 2 peers of each org would have an external endpoint, the rest won't.
 	// Have all peers join a channel with the 2 organizations.
 	// Ensure that after membership is stabilized:
@@ -151,13 +158,11 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 	peersInOrg := 5
 	orgA := "orgA"
 	orgB := "orgB"
+	channel := common.ChannelID("TEST")
 	orgs := []string{orgA, orgB}
-	orgs2Peers := map[string][]Gossip{
-		orgs[0]: {},
-		orgs[1]: {},
-	}
+	peers := []*gossipGRPC{}
+
 	expectedMembershipSize := map[string]int{}
-	peers2Orgs := map[string]api.OrgIdentityType{}
 	peersWithExternalEndpoints := make(map[string]struct{})
 
 	shouldAKnowB := func(a common.PKIidType, b common.PKIidType) bool {
@@ -175,10 +180,6 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		return bytes.Equal(orgOfPeerA, orgOfPeerB)
 	}
 
-	amountOfPeersShouldKnow := func(pkiID common.PKIidType) int {
-		return expectedMembershipSize[string(pkiID)]
-	}
-
 	var ports []int
 	var grpcs []*comm.GRPCServer
 	var certs []*common.TLSCertificates
@@ -194,29 +195,24 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		}
 	}
 
-	for orgIndex := 0; orgIndex < 2; orgIndex++ {
+	for orgIndex, org := range orgs {
 		for i := 0; i < peersInOrg; i++ {
 			id := orgIndex*peersInOrg + i
-			org := orgs[orgIndex]
 			endpoint := fmt.Sprintf("127.0.0.1:%d", ports[id])
-			peers2Orgs[endpoint] = api.OrgIdentityType(org)
 			cs.putInOrg(ports[id], org)
-			membershipSizeExpected := peersInOrg - 1 // All the others in its org
-			var peer Gossip
-			var bootPeers []int
-			if orgIndex == 0 {
-				bootPeers = []int{ports[0]}
-			}
+			expectedMembershipSize[endpoint] = peersInOrg - 1 // All the others in its org
 			externalEndpoint := ""
-			if i < 2 { // The first 2 peers of each org would have an external endpoint
+			if i < 2 {
+				// The first 2 peers of each org would have an external endpoint.
+				// orgA: 11610, 11611
+				// orgB: 11615, 11616
 				externalEndpoint = endpoint
 				peersWithExternalEndpoints[externalEndpoint] = struct{}{}
-				membershipSizeExpected += 2 // should know the extra 2 peers from the other org
+				expectedMembershipSize[endpoint] += 2 // should know the extra 2 peers from the other org
 			}
-			expectedMembershipSize[endpoint] = membershipSizeExpected
-			peer = newGossipInstanceWithGRPCWithExternalEndpoint(id, ports[id], grpcs[id], certs[id], secDialOpts[id],
-				cs, externalEndpoint, bootPeers...)
-			orgs2Peers[org] = append(orgs2Peers[org], peer)
+			peer := newGossipInstanceWithGRPCWithExternalEndpoint(id, ports[id], grpcs[id], certs[id], secDialOpts[id],
+				cs, externalEndpoint)
+			peers = append(peers, peer)
 		}
 	}
 
@@ -224,7 +220,6 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		members2AnchorPeers: map[string][]api.AnchorPeer{
 			orgA: {
 				{Host: "127.0.0.1", Port: ports[1]},
-				{Host: "127.0.0.1", Port: ports[6]},
 			},
 			orgB: {
 				{Host: "127.0.0.1", Port: ports[5]},
@@ -232,42 +227,36 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		},
 	}
 
-	channel := common.ChainID("TEST")
-
-	for _, peers := range orgs2Peers {
-		for _, p := range peers {
-			p.JoinChan(jcm, channel)
-			p.UpdateLedgerHeight(1, channel)
-		}
+	for _, p := range peers {
+		p.JoinChan(jcm, channel)
+		p.UpdateLedgerHeight(1, channel)
 	}
 
 	membershipCheck := func() bool {
-		for _, peers := range orgs2Peers {
-			for _, p := range peers {
-				peerNetMember := p.(*gossipGRPC).selfNetworkMember()
-				pkiID := peerNetMember.PKIid
-				peersKnown := p.Peers()
-				peersToKnow := amountOfPeersShouldKnow(pkiID)
-				if peersToKnow != len(peersKnown) {
-					t.Logf("peer %#v doesn't know the needed amount of peers, extected %#v, actual %#v", peerNetMember.Endpoint, peersToKnow, len(peersKnown))
+		for _, p := range peers {
+			peerNetMember := p.Node.selfNetworkMember()
+			pkiID := peerNetMember.PKIid
+			peersKnown := p.Peers()
+			peersToKnow := expectedMembershipSize[string(pkiID)]
+			if peersToKnow != len(peersKnown) {
+				t.Logf("peer %#v doesn't know the needed amount of peers, extected %#v, actual %#v", peerNetMember.Endpoint, peersToKnow, len(peersKnown))
+				return false
+			}
+			for _, knownPeer := range peersKnown {
+				if !shouldAKnowB(pkiID, knownPeer.PKIid) {
+					assert.Fail(t, fmt.Sprintf("peer %#v doesn't know %#v", peerNetMember.Endpoint, knownPeer.Endpoint))
 					return false
 				}
-				for _, knownPeer := range peersKnown {
-					if !shouldAKnowB(pkiID, knownPeer.PKIid) {
-						assert.Fail(t, fmt.Sprintf("peer %#v doesn't know %#v", peerNetMember.Endpoint, knownPeer.Endpoint))
+				internalEndpointLen := len(knownPeer.InternalEndpoint)
+				if shouldKnowInternalEndpoint(pkiID, knownPeer.PKIid) {
+					if internalEndpointLen == 0 {
+						t.Logf("peer: %v doesn't know internal endpoint of %v", peerNetMember.InternalEndpoint, string(knownPeer.PKIid))
 						return false
 					}
-					internalEndpointLen := len(knownPeer.InternalEndpoint)
-					if shouldKnowInternalEndpoint(pkiID, knownPeer.PKIid) {
-						if internalEndpointLen == 0 {
-							t.Logf("peer: %v doesn't know internal endpoint of %v", peerNetMember.InternalEndpoint, string(knownPeer.PKIid))
-							return false
-						}
-					} else {
-						if internalEndpointLen != 0 {
-							assert.Fail(t, fmt.Sprintf("peer: %v knows internal endpoint of %v (%#v)", peerNetMember.InternalEndpoint, string(knownPeer.PKIid), knownPeer.InternalEndpoint))
-							return false
-						}
+				} else {
+					if internalEndpointLen != 0 {
+						assert.Fail(t, fmt.Sprintf("peer: %v knows internal endpoint of %v (%#v)", peerNetMember.InternalEndpoint, string(knownPeer.PKIid), knownPeer.InternalEndpoint))
+						return false
 					}
 				}
 			}
@@ -275,18 +264,14 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		return true
 	}
 
-	waitUntilOrFail(t, membershipCheck)
+	waitUntilOrFail(t, membershipCheck, "waiting for all instances to form membership view")
 
-	for _, peers := range orgs2Peers {
-		for _, p := range peers {
-			p.Stop()
-		}
+	for _, p := range peers {
+		p.Stop()
 	}
 }
 
 func TestConfidentiality(t *testing.T) {
-	t.Parallel()
-	defer testWG.Done()
 	// Scenario: create 4 organizations: {A, B, C, D}, each with 3 peers.
 	// Make only the first 2 peers have an external endpoint.
 	// Also, add the peers to the following channels:
@@ -356,8 +341,8 @@ func TestConfidentiality(t *testing.T) {
 		}
 	}
 
-	var peers []Gossip
-	orgs2Peers := map[string][]Gossip{
+	var peers []*gossipGRPC
+	orgs2Peers := map[string][]*gossipGRPC{
 		"A": {},
 		"B": {},
 		"C": {},
@@ -397,18 +382,18 @@ func TestConfidentiality(t *testing.T) {
 	var wg sync.WaitGroup
 
 	msgSelector := func(o interface{}) bool {
-		msg := o.(proto.ReceivedMessage).GetGossipMessage()
-		identitiesPull := msg.IsPullMsg() && msg.GetPullMsgType() == proto.PullMsgType_IDENTITY_MSG
-		return msg.IsAliveMsg() || msg.IsStateInfoMsg() || msg.IsStateInfoSnapshot() || msg.GetMemRes() != nil || identitiesPull
+		msg := o.(protoext.ReceivedMessage).GetGossipMessage()
+		identitiesPull := protoext.IsPullMsg(msg.GossipMessage) && protoext.GetPullMsgType(msg.GossipMessage) == proto.PullMsgType_IDENTITY_MSG
+		return protoext.IsAliveMsg(msg.GossipMessage) || protoext.IsStateInfoMsg(msg.GossipMessage) || protoext.IsStateInfoSnapshot(msg.GossipMessage) || msg.GetMemRes() != nil || identitiesPull
 	}
 	// Listen to all peers membership messages and forward them to the inspection channel
 	// where they will be inspected, and the test would fail if a confidentiality violation is found
 	for _, p := range peers {
 		wg.Add(1)
 		_, msgs := p.Accept(msgSelector, true)
-		peerNetMember := p.(*gossipGRPC).gossipServiceImpl.selfNetworkMember()
+		peerNetMember := p.Node.selfNetworkMember()
 		targetORg := string(cs.OrgByPeerIdentity(api.PeerIdentityType(peerNetMember.InternalEndpoint)))
-		go func(targetOrg string, msgs <-chan proto.ReceivedMessage) {
+		go func(targetOrg string, msgs <-chan protoext.ReceivedMessage) {
 			defer wg.Done()
 			for receivedMsg := range msgs {
 				m := &msg{
@@ -441,14 +426,14 @@ func TestConfidentiality(t *testing.T) {
 		for _, ch := range channels {
 			if isOrgInChan(org, ch) {
 				for _, p := range peers {
-					p.JoinChan(joinChanMsgsByChan[ch], common.ChainID(ch))
-					p.UpdateLedgerHeight(1, common.ChainID(ch))
-					go func(p Gossip) {
+					p.JoinChan(joinChanMsgsByChan[ch], common.ChannelID(ch))
+					p.UpdateLedgerHeight(1, common.ChannelID(ch))
+					go func(p *gossipGRPC, ch string) {
 						for i := 0; i < 5; i++ {
 							time.Sleep(time.Second)
-							p.UpdateLedgerHeight(1, common.ChainID(ch))
+							p.UpdateLedgerHeight(1, common.ChannelID(ch))
 						}
-					}(p)
+					}(p, ch)
 				}
 			}
 		}
@@ -462,7 +447,7 @@ func TestConfidentiality(t *testing.T) {
 			for i, p := range orgs2Peers[org] {
 				members := p.Peers()
 				expMemberSize := expectedMembershipSize(peersInOrg, externalEndpointsInOrg, org, i < externalEndpointsInOrg)
-				peerNetMember := p.(*gossipGRPC).gossipServiceImpl.selfNetworkMember()
+				peerNetMember := p.Node.selfNetworkMember()
 				membersCount := len(members)
 				if membersCount < expMemberSize {
 					return false
@@ -475,7 +460,7 @@ func TestConfidentiality(t *testing.T) {
 		return true
 	}
 
-	waitUntilOrFail(t, assertMembership)
+	waitUntilOrFail(t, assertMembership, "waiting for all instances to form unified membership view")
 	stopPeers(peers)
 	wg.Wait()
 	atomic.StoreInt32(&finished, int32(1))
@@ -517,16 +502,16 @@ func expectedMembershipSize(peersInOrg, externalEndpointsInOrg int, org string, 
 }
 
 func extractOrgsFromMsg(msg *proto.GossipMessage, sec api.SecurityAdvisor) []string {
-	if msg.IsAliveMsg() {
+	if protoext.IsAliveMsg(msg) {
 		return []string{string(sec.OrgByPeerIdentity(api.PeerIdentityType(msg.GetAliveMsg().Membership.PkiId)))}
 	}
 
 	orgs := map[string]struct{}{}
 
-	if msg.IsPullMsg() {
-		if msg.IsDigestMsg() || msg.IsDataReq() {
+	if protoext.IsPullMsg(msg) {
+		if protoext.IsDigestMsg(msg) || protoext.IsDataReq(msg) {
 			var digests []string
-			if msg.IsDigestMsg() {
+			if protoext.IsDigestMsg(msg) {
 				digests = util.BytesToStrings(msg.GetDataDig().Digests)
 			} else {
 				digests = util.BytesToStrings(msg.GetDataReq().Digests)
@@ -538,9 +523,9 @@ func extractOrgsFromMsg(msg *proto.GossipMessage, sec api.SecurityAdvisor) []str
 			}
 		}
 
-		if msg.IsDataUpdate() {
+		if protoext.IsDataUpdate(msg) {
 			for _, identityMsg := range msg.GetDataUpdate().Data {
-				gMsg, _ := identityMsg.ToGossipMessage()
+				gMsg, _ := protoext.EnvelopeToGossipMessage(identityMsg)
 				id := string(gMsg.GetPeerIdentity().Cert)
 				org := sec.OrgByPeerIdentity(api.PeerIdentityType(id))
 				orgs[string(org)] = struct{}{}
@@ -552,7 +537,7 @@ func extractOrgsFromMsg(msg *proto.GossipMessage, sec api.SecurityAdvisor) []str
 		alive := msg.GetMemRes().Alive
 		dead := msg.GetMemRes().Dead
 		for _, envp := range append(alive, dead...) {
-			msg, _ := envp.ToGossipMessage()
+			msg, _ := protoext.EnvelopeToGossipMessage(envp)
 			orgs[string(sec.OrgByPeerIdentity(api.PeerIdentityType(msg.GetAliveMsg().Membership.PkiId)))] = struct{}{}
 		}
 	}
@@ -571,7 +556,7 @@ func inspectMsgs(t *testing.T, msgChan chan *msg, sec api.SecurityAdvisor, peers
 		if msg.src == msg.dst {
 			continue
 		}
-		if msg.IsStateInfoMsg() || msg.IsStateInfoSnapshot() {
+		if protoext.IsStateInfoMsg(msg.GossipMessage) || protoext.IsStateInfoSnapshot(msg.GossipMessage) {
 			inspectStateInfoMsg(t, msg, peersWithExternalEndpoints)
 			continue
 		}
@@ -594,12 +579,12 @@ func inspectMsgs(t *testing.T, msgChan chan *msg, sec api.SecurityAdvisor, peers
 
 		// If this is an identity snapshot, make sure that only identities of peers
 		// with external endpoints pass between the organizations.
-		isIdentityPull := msg.IsPullMsg() && msg.GetPullMsgType() == proto.PullMsgType_IDENTITY_MSG
-		if !(isIdentityPull && msg.IsDataUpdate()) {
+		isIdentityPull := protoext.IsPullMsg(msg.GossipMessage) && protoext.GetPullMsgType(msg.GossipMessage) == proto.PullMsgType_IDENTITY_MSG
+		if !(isIdentityPull && protoext.IsDataUpdate(msg.GossipMessage)) {
 			continue
 		}
 		for _, envp := range msg.GetDataUpdate().Data {
-			identityMsg, _ := envp.ToGossipMessage()
+			identityMsg, _ := protoext.EnvelopeToGossipMessage(envp)
 			pkiID := identityMsg.GetPeerIdentity().PkiId
 			_, hasExternalEndpoint := peersWithExternalEndpoints[string(pkiID)]
 			assert.True(t, hasExternalEndpoint,
@@ -609,7 +594,7 @@ func inspectMsgs(t *testing.T, msgChan chan *msg, sec api.SecurityAdvisor, peers
 }
 
 func inspectStateInfoMsg(t *testing.T, m *msg, peersWithExternalEndpoints map[string]struct{}) {
-	if m.IsStateInfoMsg() {
+	if protoext.IsStateInfoMsg(m.GossipMessage) {
 		pkiID := m.GetStateInfo().PkiId
 		_, hasExternalEndpoint := peersWithExternalEndpoints[string(pkiID)]
 		assert.True(t, hasExternalEndpoint, "peer %s has no external endpoint but crossed an org", string(pkiID))
@@ -617,7 +602,7 @@ func inspectStateInfoMsg(t *testing.T, m *msg, peersWithExternalEndpoints map[st
 	}
 
 	for _, envp := range m.GetStateSnapshot().Elements {
-		msg, _ := envp.ToGossipMessage()
+		msg, _ := protoext.EnvelopeToGossipMessage(envp)
 		pkiID := msg.GetStateInfo().PkiId
 		_, hasExternalEndpoint := peersWithExternalEndpoints[string(pkiID)]
 		assert.True(t, hasExternalEndpoint, "peer %s has no external endpoint but crossed an org", string(pkiID))

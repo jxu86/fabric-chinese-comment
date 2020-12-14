@@ -9,8 +9,9 @@ package configtx
 import (
 	"strings"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/common/policies"
-	cb "github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
@@ -64,7 +65,7 @@ func validateModPolicy(modPolicy string) error {
 
 }
 
-func (vi *ValidatorImpl) verifyDeltaSet(deltaSet map[string]comparable, signedData []*cb.SignedData) error {
+func (vi *ValidatorImpl) verifyDeltaSet(deltaSet map[string]comparable, signedData []*protoutil.SignedData) error {
 	if len(deltaSet) == 0 {
 		return errors.Errorf("delta set was empty -- update would have no effect")
 	}
@@ -93,7 +94,7 @@ func (vi *ValidatorImpl) verifyDeltaSet(deltaSet map[string]comparable, signedDa
 		}
 
 		// Ensure the policy is satisfied
-		if err := policy.Evaluate(signedData); err != nil {
+		if err := policy.EvaluateSignedData(signedData); err != nil {
 			return errors.Wrapf(err, "policy for %s not satisfied", key)
 		}
 	}
@@ -140,7 +141,7 @@ func (vi *ValidatorImpl) authorizeUpdate(configUpdateEnv *cb.ConfigUpdateEnvelop
 	}
 
 	deltaSet := computeDeltaSet(readSet, writeSet)
-	signedData, err := configUpdateEnv.AsSignedData()
+	signedData, err := protoutil.ConfigUpdateEnvelopeAsSignedData(configUpdateEnv)
 	if err != nil {
 		return nil, err
 	}

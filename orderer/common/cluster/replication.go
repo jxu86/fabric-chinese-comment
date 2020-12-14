@@ -13,12 +13,13 @@ import (
 	"encoding/pem"
 	"time"
 
-	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/core/comm"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
+	"github.com/hyperledger/fabric/internal/pkg/identity"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
@@ -38,7 +39,13 @@ func AnyChannel(_ string) bool {
 // PullerConfigFromTopLevelConfig creates a PullerConfig from a TopLevel config,
 // and from a signer and TLS key cert pair.
 // The PullerConfig's channel is initialized to be the system channel.
-func PullerConfigFromTopLevelConfig(systemChannel string, conf *localconfig.TopLevel, tlsKey, tlsCert []byte, signer crypto.LocalSigner) PullerConfig {
+func PullerConfigFromTopLevelConfig(
+	systemChannel string,
+	conf *localconfig.TopLevel,
+	tlsKey,
+	tlsCert []byte,
+	signer identity.SignerSerializer,
+) PullerConfig {
 	return PullerConfig{
 		Channel:             systemChannel,
 		MaxTotalBufferBytes: conf.General.Cluster.ReplicationBufferSize,
@@ -132,12 +139,16 @@ func (r *Replicator) ReplicateChains() []string {
 			if err != nil {
 				r.Logger.Panicf("Failed to create a ledger for channel %s: %v", channel.ChannelName, err)
 			}
-			gb, err := ChannelCreationBlockToGenesisBlock(channel.GenesisBlock)
-			if err != nil {
-				r.Logger.Panicf("Failed converting channel creation block for channel %s to genesis block: %v",
-					channel.ChannelName, err)
+
+			if channel.GenesisBlock == nil {
+				if ledger.Height() == 0 {
+					r.Logger.Panicf("Expecting channel %s to at least contain genesis block, but it doesn't", channel.ChannelName)
+				}
+
+				continue
 			}
-			r.appendBlock(gb, ledger, channel.ChannelName)
+
+			r.appendBlock(channel.GenesisBlock, ledger, channel.ChannelName)
 		}
 	}
 
@@ -210,7 +221,7 @@ func (r *Replicator) pullChannelBlocks(channel string, puller *BlockPuller, late
 		return ErrRetryCountExhausted
 	}
 	r.appendBlock(nextBlock, ledger, channel)
-	actualPrevHash := nextBlock.Header.Hash()
+	actualPrevHash := protoutil.BlockHeaderHash(nextBlock.Header)
 
 	for seq := uint64(nextBlockToPull + 1); seq < latestHeight; seq++ {
 		block := puller.PullBlock(seq)
@@ -222,7 +233,7 @@ func (r *Replicator) pullChannelBlocks(channel string, puller *BlockPuller, late
 			return errors.Errorf("block header mismatch on sequence %d, expected %x, got %x",
 				block.Header.Number, actualPrevHash, reportedPrevHash)
 		}
-		actualPrevHash = block.Header.Hash()
+		actualPrevHash = protoutil.BlockHeaderHash(block.Header)
 		if channel == r.SystemChannel && block.Header.Number == r.BootBlock.Header.Number {
 			r.compareBootBlockWithSystemChannelLastConfigBlock(block)
 			r.appendBlock(block, ledger, channel)
@@ -248,10 +259,10 @@ func (r *Replicator) appendBlock(block *common.Block, ledger LedgerWriter, chann
 
 func (r *Replicator) compareBootBlockWithSystemChannelLastConfigBlock(block *common.Block) {
 	// Overwrite the received block's data hash
-	block.Header.DataHash = block.Data.Hash()
+	block.Header.DataHash = protoutil.BlockDataHash(block.Data)
 
-	bootBlockHash := r.BootBlock.Header.Hash()
-	retrievedBlockHash := block.Header.Hash()
+	bootBlockHash := protoutil.BlockHeaderHash(r.BootBlock.Header)
+	retrievedBlockHash := protoutil.BlockHeaderHash(block.Header)
 	if bytes.Equal(bootBlockHash, retrievedBlockHash) {
 		return
 	}
@@ -329,7 +340,7 @@ type PullerConfig struct {
 	TLSKey              []byte
 	TLSCert             []byte
 	Timeout             time.Duration
-	Signer              crypto.LocalSigner
+	Signer              identity.SignerSerializer
 	Channel             string
 	MaxTotalBufferBytes int
 }
@@ -343,19 +354,19 @@ type VerifierRetriever interface {
 }
 
 // BlockPullerFromConfigBlock returns a BlockPuller that doesn't verify signatures on blocks.
-func BlockPullerFromConfigBlock(conf PullerConfig, block *common.Block, verifierRetriever VerifierRetriever) (*BlockPuller, error) {
+func BlockPullerFromConfigBlock(conf PullerConfig, block *common.Block, verifierRetriever VerifierRetriever, bccsp bccsp.BCCSP) (*BlockPuller, error) {
 	if block == nil {
 		return nil, errors.New("nil block")
 	}
 
-	endpoints, err := EndpointconfigFromConfigBlock(block)
+	endpoints, err := EndpointconfigFromConfigBlock(block, bccsp)
 	if err != nil {
 		return nil, err
 	}
 
 	clientConf := comm.ClientConfig{
 		Timeout: conf.Timeout,
-		SecOpts: &comm.SecureOptions{
+		SecOpts: comm.SecureOptions{
 			Certificate:       conf.TLSCert,
 			Key:               conf.TLSKey,
 			RequireClientCert: true,
@@ -364,7 +375,7 @@ func BlockPullerFromConfigBlock(conf PullerConfig, block *common.Block, verifier
 	}
 
 	dialer := &StandardDialer{
-		ClientConfig: clientConf.Clone(),
+		Config: clientConf.Clone(),
 	}
 
 	tlsCertAsDER, _ := pem.Decode(conf.TLSCert)
@@ -373,7 +384,7 @@ func BlockPullerFromConfigBlock(conf PullerConfig, block *common.Block, verifier
 	}
 
 	return &BlockPuller{
-		Logger:  flogging.MustGetLogger("orderer.common.cluster.replication"),
+		Logger:  flogging.MustGetLogger("orderer.common.cluster.replication").With("channel", conf.Channel),
 		Dialer:  dialer,
 		TLSCert: tlsCertAsDER.Bytes,
 		VerifyBlockSequence: func(blocks []*common.Block, channel string) error {
@@ -396,7 +407,7 @@ func BlockPullerFromConfigBlock(conf PullerConfig, block *common.Block, verifier
 type NoopBlockVerifier struct{}
 
 // VerifyBlockSignature accepts all signatures over blocks.
-func (*NoopBlockVerifier) VerifyBlockSignature(sd []*common.SignedData, config *common.ConfigEnvelope) error {
+func (*NoopBlockVerifier) VerifyBlockSignature(sd []*protoutil.SignedData, config *common.ConfigEnvelope) error {
 	return nil
 }
 
@@ -468,7 +479,7 @@ func PullLastConfigBlock(puller ChainPuller) (*common.Block, error) {
 	if lastBlock == nil {
 		return nil, ErrRetryCountExhausted
 	}
-	lastConfNumber, err := lastConfigFromBlock(lastBlock)
+	lastConfNumber, err := protoutil.GetLastConfigIndexFromBlock(lastBlock)
 	if err != nil {
 		return nil, err
 	}
@@ -497,13 +508,6 @@ func latestHeightAndEndpoint(puller ChainPuller) (string, uint64, error) {
 		}
 	}
 	return mostUpToDateEndpoint, maxHeight, nil
-}
-
-func lastConfigFromBlock(block *common.Block) (uint64, error) {
-	if block.Metadata == nil || len(block.Metadata.Metadata) <= int(common.BlockMetadataIndex_LAST_CONFIG) {
-		return 0, errors.New("no metadata in block")
-	}
-	return utils.GetLastConfigIndexFromBlock(block)
 }
 
 // Close closes the ChainInspector
@@ -543,23 +547,25 @@ func (ci *ChainInspector) Channels() []ChannelGenesisBlock {
 			ci.Logger.Panicf("Failed pulling block [%d] from the system channel", seq)
 		}
 		ci.validateHashPointer(block, prevHash)
-		channel, err := IsNewChannelBlock(block)
-		if err != nil {
-			// If we failed to classify a block, something is wrong in the system chain
-			// we're trying to pull, so abort.
-			ci.Logger.Panicf("Failed classifying block [%d]: %s", seq, err)
-			continue
-		}
 		// Set the previous hash for the next iteration
-		prevHash = block.Header.Hash()
+		prevHash = protoutil.BlockHeaderHash(block.Header)
+
+		channel, gb, err := ExtractGenesisBlock(ci.Logger, block)
+		if err != nil {
+			// If we failed to inspect a block, something is wrong in the system chain
+			// we're trying to pull, so abort.
+			ci.Logger.Panicf("Failed extracting channel genesis block from config block: %v", err)
+		}
+
 		if channel == "" {
 			ci.Logger.Info("Block", seq, "doesn't contain a new channel")
 			continue
 		}
+
 		ci.Logger.Info("Block", seq, "contains channel", channel)
 		channels[channel] = ChannelGenesisBlock{
 			ChannelName:  channel,
-			GenesisBlock: block,
+			GenesisBlock: gb,
 		}
 	}
 	// At this point, block holds reference to the last block pulled.
@@ -594,83 +600,78 @@ func flattenChannelMap(m map[string]ChannelGenesisBlock) []ChannelGenesisBlock {
 	return res
 }
 
-// ChannelCreationBlockToGenesisBlock converts a channel creation block to a genesis block
-func ChannelCreationBlockToGenesisBlock(block *common.Block) (*common.Block, error) {
+// ExtractGenesisBlock determines if a config block creates new channel, in which
+// case it returns channel name, genesis block and nil error.
+func ExtractGenesisBlock(logger *flogging.FabricLogger, block *common.Block) (string, *common.Block, error) {
 	if block == nil {
-		return nil, errors.New("nil block")
+		return "", nil, errors.New("nil block")
 	}
-	env, err := utils.ExtractEnvelope(block, 0)
+	env, err := protoutil.ExtractEnvelope(block, 0)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	payload, err := utils.ExtractPayload(env)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
-		return nil, err
-	}
-	block.Data.Data = [][]byte{payload.Data}
-	block.Header.DataHash = block.Data.Hash()
-	block.Header.Number = 0
-	block.Header.PreviousHash = nil
-	metadata := &common.BlockMetadata{
-		Metadata: make([][]byte, 4),
-	}
-	block.Metadata = metadata
-	metadata.Metadata[common.BlockMetadataIndex_LAST_CONFIG] = utils.MarshalOrPanic(&common.Metadata{
-		Value: utils.MarshalOrPanic(&common.LastConfig{Index: 0}),
-		// This is a genesis block, peer never verify this signature because we can't bootstrap
-		// trust from an earlier block, hence there are no signatures here.
-	})
-	return block, nil
-}
-
-// IsNewChannelBlock returns a name of the channel in case
-// it holds a channel create transaction, or empty string otherwise.
-func IsNewChannelBlock(block *common.Block) (string, error) {
-	if block == nil {
-		return "", errors.New("nil block")
-	}
-	env, err := utils.ExtractEnvelope(block, 0)
-	if err != nil {
-		return "", err
-	}
-	payload, err := utils.ExtractPayload(env)
-	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if payload.Header == nil {
-		return "", errors.New("nil header in payload")
+		return "", nil, errors.New("nil header in payload")
 	}
-	chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
+	chdr, err := protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	// The transaction is an orderer transaction
+	// The transaction is not orderer transaction
 	if common.HeaderType(chdr.Type) != common.HeaderType_ORDERER_TRANSACTION {
-		return "", nil
+		return "", nil, nil
 	}
 	systemChannelName := chdr.ChannelId
-	innerEnvelope, err := utils.UnmarshalEnvelope(payload.Data)
+	innerEnvelope, err := protoutil.UnmarshalEnvelope(payload.Data)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	innerPayload, err := utils.UnmarshalPayload(innerEnvelope.Payload)
+	innerPayload, err := protoutil.UnmarshalPayload(innerEnvelope.Payload)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if innerPayload.Header == nil {
-		return "", errors.New("inner payload's header is nil")
+		return "", nil, errors.New("inner payload's header is nil")
 	}
-	chdr, err = utils.UnmarshalChannelHeader(innerPayload.Header.ChannelHeader)
+	chdr, err = protoutil.UnmarshalChannelHeader(innerPayload.Header.ChannelHeader)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	// The inner payload's header is a config transaction
+	// The inner payload's header should be a config transaction
 	if common.HeaderType(chdr.Type) != common.HeaderType_CONFIG {
-		return "", nil
+		logger.Warnf("Expecting %s envelope in block, got %s", common.HeaderType_CONFIG, common.HeaderType(chdr.Type))
+		return "", nil, nil
 	}
 	// In any case, exclude all system channel transactions
 	if chdr.ChannelId == systemChannelName {
-		return "", nil
+		logger.Warnf("Expecting config envelope in %s block to target a different "+
+			"channel other than system channel '%s'", common.HeaderType_ORDERER_TRANSACTION, systemChannelName)
+		return "", nil, nil
 	}
-	return chdr.ChannelId, nil
+
+	metadata := &common.BlockMetadata{
+		Metadata: make([][]byte, 4),
+	}
+	metadata.Metadata[common.BlockMetadataIndex_SIGNATURES] = protoutil.MarshalOrPanic(&common.OrdererBlockMetadata{
+		LastConfig: &common.LastConfig{Index: 0},
+		// This is a genesis block, peer never verify this signature because we can't bootstrap
+		// trust from an earlier block, hence there are no signatures here.
+	})
+	metadata.Metadata[common.BlockMetadataIndex_LAST_CONFIG] = protoutil.MarshalOrPanic(&common.Metadata{
+		Value: protoutil.MarshalOrPanic(&common.LastConfig{Index: 0}),
+		// This is a genesis block, peer never verify this signature because we can't bootstrap
+		// trust from an earlier block, hence there are no signatures here.
+	})
+
+	blockdata := &common.BlockData{Data: [][]byte{payload.Data}}
+	b := &common.Block{
+		Header:   &common.BlockHeader{DataHash: protoutil.BlockDataHash(blockdata)},
+		Data:     blockdata,
+		Metadata: metadata,
+	}
+	return chdr.ChannelId, b, nil
 }

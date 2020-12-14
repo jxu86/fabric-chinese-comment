@@ -10,12 +10,13 @@ import (
 	"bytes"
 
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
+	protoetcdraft "github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
-	cb "github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
-	protoetcdraft "github.com/hyperledger/fabric/protos/orderer/etcdraft"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
@@ -23,8 +24,8 @@ import (
 type MaintenanceFilterSupport interface {
 	// OrdererConfig returns the config.Orderer for the channel and whether the Orderer config exists
 	OrdererConfig() (channelconfig.Orderer, bool)
-
-	ChainID() string
+	// ChannelID returns the ChannelID
+	ChannelID() string
 }
 
 // MaintenanceFilter checks whether the orderer config ConsensusType is in maintenance mode, and if it is,
@@ -33,14 +34,16 @@ type MaintenanceFilter struct {
 	support MaintenanceFilterSupport
 	// A set of permitted target consensus types
 	permittedTargetConsensusTypes map[string]bool
+	bccsp                         bccsp.BCCSP
 }
 
 // NewMaintenanceFilter creates a new maintenance filter, at every evaluation, the policy manager and orderer config
 // are called to retrieve the latest version of the policy and config.
-func NewMaintenanceFilter(support MaintenanceFilterSupport) *MaintenanceFilter {
+func NewMaintenanceFilter(support MaintenanceFilterSupport, bccsp bccsp.BCCSP) *MaintenanceFilter {
 	mf := &MaintenanceFilter{
 		support:                       support,
 		permittedTargetConsensusTypes: make(map[string]bool),
+		bccsp:                         bccsp,
 	}
 	mf.permittedTargetConsensusTypes["etcdraft"] = true
 	mf.permittedTargetConsensusTypes["solo"] = true
@@ -56,7 +59,7 @@ func (mf *MaintenanceFilter) Apply(message *cb.Envelope) error {
 	}
 
 	configEnvelope := &cb.ConfigEnvelope{}
-	chanHdr, err := utils.UnmarshalEnvelopeOfType(message, cb.HeaderType_CONFIG, configEnvelope)
+	chanHdr, err := protoutil.UnmarshalEnvelopeOfType(message, cb.HeaderType_CONFIG, configEnvelope)
 	if err != nil {
 		return errors.Wrap(err, "envelope unmarshalling failed")
 	}
@@ -78,7 +81,7 @@ func (mf *MaintenanceFilter) inspect(configEnvelope *cb.ConfigEnvelope, ordererC
 		return errors.Errorf("updated config does not include a config update")
 	}
 
-	bundle, err := channelconfig.NewBundle(mf.support.ChainID(), configEnvelope.Config)
+	bundle, err := channelconfig.NewBundle(mf.support.ChannelID(), configEnvelope.Config, mf.bccsp)
 	if err != nil {
 		return errors.Wrap(err, "failed to parse config")
 	}
@@ -114,7 +117,8 @@ func (mf *MaintenanceFilter) inspect(configEnvelope *cb.ConfigEnvelope, ordererC
 		}
 	}
 
-	// ConsensusType.Type can only change in maintenance-mode, and only from kafka to raft (for now).
+	// ConsensusType.Type can only change in maintenance-mode, and only within the set of permitted types.
+	// Note: only kafka to etcdraft or solo to etcdraft transitions are actually supported.
 	if ordererConfig.ConsensusType() != nextOrdererConfig.ConsensusType() {
 		if ordererConfig.ConsensusState() == orderer.ConsensusType_STATE_NORMAL {
 			return errors.Errorf("attempted to change consensus type from %s to %s, but current config ConsensusType.State is not in maintenance mode",
@@ -138,12 +142,12 @@ func (mf *MaintenanceFilter) inspect(configEnvelope *cb.ConfigEnvelope, ordererC
 		}
 
 		logger.Infof("[channel: %s] consensus-type migration: about to change from %s to %s",
-			mf.support.ChainID(), ordererConfig.ConsensusType(), nextOrdererConfig.ConsensusType())
+			mf.support.ChannelID(), ordererConfig.ConsensusType(), nextOrdererConfig.ConsensusType())
 	}
 
 	if nextOrdererConfig.ConsensusState() != ordererConfig.ConsensusState() {
 		logger.Infof("[channel: %s] maintenance mode: ConsensusType.State about to change from %s to %s",
-			mf.support.ChainID(), ordererConfig.ConsensusState(), nextOrdererConfig.ConsensusState())
+			mf.support.ChannelID(), ordererConfig.ConsensusState(), nextOrdererConfig.ConsensusState())
 	}
 
 	return nil
@@ -153,7 +157,7 @@ func (mf *MaintenanceFilter) inspect(configEnvelope *cb.ConfigEnvelope, ordererC
 // only to the ConsensusType value.
 func (mf *MaintenanceFilter) ensureConsensusTypeChangeOnly(configEnvelope *cb.ConfigEnvelope) error {
 
-	configUpdateEnv, err := utils.EnvelopeToConfigUpdate(configEnvelope.LastUpdate)
+	configUpdateEnv, err := protoutil.EnvelopeToConfigUpdate(configEnvelope.LastUpdate)
 	if err != nil {
 		return errors.Wrap(err, "envelope to config update unmarshaling error")
 	}

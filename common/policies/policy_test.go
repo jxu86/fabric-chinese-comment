@@ -13,10 +13,27 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
-	cb "github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/msp"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/msp"
+	"github.com/hyperledger/fabric/common/crypto/tlsgen"
+	"github.com/hyperledger/fabric/common/flogging/floggingtest"
+	"github.com/hyperledger/fabric/common/policies/mocks"
+	mspi "github.com/hyperledger/fabric/msp"
+	"github.com/hyperledger/fabric/protoutil"
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap/zapcore"
 )
+
+//go:generate counterfeiter -o mocks/identity_deserializer.go --fake-name IdentityDeserializer . identityDeserializer
+type identityDeserializer interface {
+	mspi.IdentityDeserializer
+}
+
+//go:generate counterfeiter -o mocks/identity.go --fake-name Identity . identity
+type identity interface {
+	mspi.Identity
+}
 
 type mockProvider struct{}
 
@@ -52,7 +69,7 @@ func TestUnnestedManager(t *testing.T) {
 	assert.True(t, ok, "Should have found the root manager")
 	assert.Equal(t, m, r)
 
-	assert.Len(t, m.policies, len(config.Policies))
+	assert.Len(t, m.Policies, len(config.Policies))
 
 	for policyName := range config.Policies {
 		_, ok := m.GetPolicy(policyName)
@@ -233,4 +250,127 @@ func TestPrincipalSetContainingOnly(t *testing.T) {
 
 	assert.Len(t, principalSets, 1)
 	assert.True(t, principalSets[0].ContainingOnly(between20And30))
+}
+
+func TestSignatureSetToValidIdentities(t *testing.T) {
+	sd := []*protoutil.SignedData{
+		{
+			Data:      []byte("data1"),
+			Identity:  []byte("identity1"),
+			Signature: []byte("signature1"),
+		},
+		{
+			Data:      []byte("data1"),
+			Identity:  []byte("identity1"),
+			Signature: []byte("signature1"),
+		},
+	}
+
+	fIDDs := &mocks.IdentityDeserializer{}
+	fID := &mocks.Identity{}
+	fID.VerifyReturns(nil)
+	fID.GetIdentifierReturns(&mspi.IdentityIdentifier{
+		Id:    "id",
+		Mspid: "mspid",
+	})
+	fIDDs.DeserializeIdentityReturns(fID, nil)
+
+	ids := SignatureSetToValidIdentities(sd, fIDDs)
+	assert.Len(t, ids, 1)
+	assert.NotNil(t, ids[0].GetIdentifier())
+	assert.Equal(t, "id", ids[0].GetIdentifier().Id)
+	assert.Equal(t, "mspid", ids[0].GetIdentifier().Mspid)
+	data, sig := fID.VerifyArgsForCall(0)
+	assert.Equal(t, []byte("data1"), data)
+	assert.Equal(t, []byte("signature1"), sig)
+	sidBytes := fIDDs.DeserializeIdentityArgsForCall(0)
+	assert.Equal(t, []byte("identity1"), sidBytes)
+}
+
+func TestSignatureSetToValidIdentitiesDeserializeErr(t *testing.T) {
+	oldLogger := logger
+	l, recorder := floggingtest.NewTestLogger(t, floggingtest.AtLevel(zapcore.InfoLevel))
+	logger = l
+	defer func() { logger = oldLogger }()
+
+	fakeIdentityDeserializer := &mocks.IdentityDeserializer{}
+	fakeIdentityDeserializer.DeserializeIdentityReturns(nil, errors.New("mango"))
+
+	// generate actual x509 certificate
+	ca, err := tlsgen.NewCA()
+	assert.NoError(t, err)
+	client1, err := ca.NewClientCertKeyPair()
+	assert.NoError(t, err)
+	id := &msp.SerializedIdentity{
+		IdBytes: client1.Cert,
+	}
+	idBytes, err := proto.Marshal(id)
+	assert.NoError(t, err)
+
+	tests := []struct {
+		spec                     string
+		signedData               []*protoutil.SignedData
+		expectedLogEntryContains []string
+	}{
+		{
+			spec: "deserialize identity error - identity is random bytes",
+			signedData: []*protoutil.SignedData{
+				{
+					Identity: []byte("identity1"),
+				},
+			},
+			expectedLogEntryContains: []string{"invalid identity", fmt.Sprintf("serialized-identity=%x", []byte("identity1")), "error=mango"},
+		},
+		{
+			spec: "deserialize identity error - actual certificate",
+			signedData: []*protoutil.SignedData{
+				{
+					Identity: idBytes,
+				},
+			},
+			expectedLogEntryContains: []string{"invalid identity", fmt.Sprintf("certificate subject=%s serialnumber=%d", client1.TLSCert.Subject, client1.TLSCert.SerialNumber), "error=mango"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.spec, func(t *testing.T) {
+			ids := SignatureSetToValidIdentities(tc.signedData, fakeIdentityDeserializer)
+			assert.Len(t, ids, 0)
+			assertLogContains(t, recorder, tc.expectedLogEntryContains...)
+		})
+	}
+}
+
+func TestSignatureSetToValidIdentitiesVerifyErr(t *testing.T) {
+	sd := []*protoutil.SignedData{
+		{
+			Data:      []byte("data1"),
+			Identity:  []byte("identity1"),
+			Signature: []byte("signature1"),
+		},
+	}
+
+	fIDDs := &mocks.IdentityDeserializer{}
+	fID := &mocks.Identity{}
+	fID.VerifyReturns(errors.New("bad signature"))
+	fID.GetIdentifierReturns(&mspi.IdentityIdentifier{
+		Id:    "id",
+		Mspid: "mspid",
+	})
+	fIDDs.DeserializeIdentityReturns(fID, nil)
+
+	ids := SignatureSetToValidIdentities(sd, fIDDs)
+	assert.Len(t, ids, 0)
+	data, sig := fID.VerifyArgsForCall(0)
+	assert.Equal(t, []byte("data1"), data)
+	assert.Equal(t, []byte("signature1"), sig)
+	sidBytes := fIDDs.DeserializeIdentityArgsForCall(0)
+	assert.Equal(t, []byte("identity1"), sidBytes)
+}
+
+func assertLogContains(t *testing.T, r *floggingtest.Recorder, ss ...string) {
+	defer r.Reset()
+	for _, s := range ss {
+		assert.NotEmpty(t, r.EntriesContaining(s))
+	}
 }

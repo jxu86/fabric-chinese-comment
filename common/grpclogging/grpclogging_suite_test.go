@@ -25,12 +25,51 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-//go:generate protoc --proto_path=$GOPATH/src/github.com/hyperledger/fabric/common/grpclogging/testpb --go_out=plugins=grpc:$GOPATH/src $GOPATH/src/github.com/hyperledger/fabric/common/grpclogging/testpb/echo.proto
+//go:generate protoc --proto_path=testpb --go_out=plugins=grpc,paths=source_relative:testpb testpb/echo.proto
 
 func TestGrpclogging(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Grpclogging Suite")
 }
+
+var (
+	clientCertWithKey tls.Certificate
+	serverCertWithKey tls.Certificate
+
+	caCertPool      *x509.CertPool
+	clientTLSConfig *tls.Config
+	serverTLSConfig *tls.Config
+)
+
+var _ = BeforeSuite(func() {
+	var err error
+	caCert, caKey := generateCA("test-ca", "127.0.0.1")
+	clientCert, clientKey := issueCertificate(caCert, caKey, "client", "127.0.0.1")
+	clientCertWithKey, err = tls.X509KeyPair(clientCert, clientKey)
+	Expect(err).NotTo(HaveOccurred())
+	serverCert, serverKey := issueCertificate(caCert, caKey, "server", "127.0.0.1")
+	serverCertWithKey, err = tls.X509KeyPair(serverCert, serverKey)
+	Expect(err).NotTo(HaveOccurred())
+
+	caCertPool = x509.NewCertPool()
+	added := caCertPool.AppendCertsFromPEM(caCert)
+	Expect(added).To(BeTrue())
+
+	serverTLSConfig = &tls.Config{
+		Certificates: []tls.Certificate{serverCertWithKey},
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientCAs:    caCertPool,
+		RootCAs:      caCertPool,
+	}
+	serverTLSConfig.BuildNameToCertificate()
+
+	clientTLSConfig = &tls.Config{
+		Certificates:       []tls.Certificate{clientCertWithKey},
+		RootCAs:            caCertPool,
+		ClientSessionCache: tls.NewLRUClientSessionCache(10),
+	}
+	clientTLSConfig.BuildNameToCertificate()
+})
 
 //go:generate counterfeiter -o fakes/echo_service.go --fake-name EchoServiceServer . echoServiceServer
 

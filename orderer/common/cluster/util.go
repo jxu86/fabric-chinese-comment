@@ -8,21 +8,27 @@ package cluster
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/hyperledger/fabric-config/protolator"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/policies"
-	"github.com/hyperledger/fabric/common/tools/protolator"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/core/comm"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 )
@@ -48,27 +54,47 @@ func (cbc ConnByCertMap) Remove(cert []byte) {
 	delete(cbc, string(cert))
 }
 
+// Size returns the size of the connections by certificate mapping
 func (cbc ConnByCertMap) Size() int {
 	return len(cbc)
 }
 
+// CertificateComparator returns whether some relation holds for two given certificates
+type CertificateComparator func([]byte, []byte) bool
+
 // MemberMapping defines NetworkMembers by their ID
-type MemberMapping map[uint64]*Stub
+// and enables to lookup stubs by a certificate
+type MemberMapping struct {
+	id2stub       map[uint64]*Stub
+	SamePublicKey CertificateComparator
+}
+
+// Foreach applies the given function on all stubs in the mapping
+func (mp *MemberMapping) Foreach(f func(id uint64, stub *Stub)) {
+	for id, stub := range mp.id2stub {
+		f(id, stub)
+	}
+}
 
 // Put inserts the given stub to the MemberMapping
-func (mp MemberMapping) Put(stub *Stub) {
-	mp[stub.ID] = stub
+func (mp *MemberMapping) Put(stub *Stub) {
+	mp.id2stub[stub.ID] = stub
+}
+
+// Remove removes the stub with the given ID from the MemberMapping
+func (mp *MemberMapping) Remove(ID uint64) {
+	delete(mp.id2stub, ID)
 }
 
 // ByID retrieves the Stub with the given ID from the MemberMapping
 func (mp MemberMapping) ByID(ID uint64) *Stub {
-	return mp[ID]
+	return mp.id2stub[ID]
 }
 
 // LookupByClientCert retrieves a Stub with the given client certificate
 func (mp MemberMapping) LookupByClientCert(cert []byte) *Stub {
-	for _, stub := range mp {
-		if bytes.Equal(stub.ClientTLSCert, cert) {
+	for _, stub := range mp.id2stub {
+		if mp.SamePublicKey(stub.ClientTLSCert, cert) {
 			return stub
 		}
 	}
@@ -79,7 +105,7 @@ func (mp MemberMapping) LookupByClientCert(cert []byte) *Stub {
 // represented as strings
 func (mp MemberMapping) ServerCertificates() StringSet {
 	res := make(StringSet)
-	for _, member := range mp {
+	for _, member := range mp.id2stub {
 		res[string(member.ServerTLSCert)] = struct{}{}
 	}
 	return res
@@ -106,21 +132,21 @@ func (ss StringSet) subtract(set StringSet) {
 // that are only established if the given predicate
 // is fulfilled
 type PredicateDialer struct {
-	lock sync.RWMutex
-	comm.ClientConfig
+	lock   sync.RWMutex
+	Config comm.ClientConfig
 }
 
 func (dialer *PredicateDialer) UpdateRootCAs(serverRootCAs [][]byte) {
 	dialer.lock.Lock()
 	defer dialer.lock.Unlock()
-	dialer.ClientConfig.SecOpts.ServerRootCAs = serverRootCAs
+	dialer.Config.SecOpts.ServerRootCAs = serverRootCAs
 }
 
 // Dial creates a new gRPC connection that can only be established, if the remote node's
 // certificate chain satisfy verifyFunc
 func (dialer *PredicateDialer) Dial(address string, verifyFunc RemoteVerifier) (*grpc.ClientConn, error) {
 	dialer.lock.RLock()
-	cfg := dialer.ClientConfig.Clone()
+	cfg := dialer.Config.Clone()
 	dialer.lock.RUnlock()
 
 	cfg.SecOpts.VerifyCertificate = verifyFunc
@@ -128,7 +154,18 @@ func (dialer *PredicateDialer) Dial(address string, verifyFunc RemoteVerifier) (
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return client.NewConnection(address, "")
+	return client.NewConnection(address, func(tlsConfig *tls.Config) {
+		// We need to dynamically overwrite the TLS root CAs,
+		// as they may be updated.
+		dialer.lock.RLock()
+		serverRootCAs := dialer.Config.Clone().SecOpts.ServerRootCAs
+		dialer.lock.RUnlock()
+
+		tlsConfig.RootCAs = x509.NewCertPool()
+		for _, pem := range serverRootCAs {
+			tlsConfig.RootCAs.AppendCertsFromPEM(pem)
+		}
+	})
 }
 
 // DERtoPEM returns a PEM representation of the DER
@@ -140,15 +177,15 @@ func DERtoPEM(der []byte) string {
 	}))
 }
 
-// StandardDialer wraps an AtomicClientConfig,
-// and provides a means to connect according to given EndpointCriteria.
+// StandardDialer wraps an ClientConfig, and provides
+// a means to connect according to given EndpointCriteria.
 type StandardDialer struct {
-	comm.ClientConfig
+	Config comm.ClientConfig
 }
 
 // Dial dials an address according to the given EndpointCriteria
 func (dialer *StandardDialer) Dial(endpointCriteria EndpointCriteria) (*grpc.ClientConn, error) {
-	cfg := dialer.ClientConfig.Clone()
+	cfg := dialer.Config.Clone()
 	cfg.SecOpts.ServerRootCAs = endpointCriteria.TLSRootCAs
 
 	client, err := comm.NewGRPCClient(cfg)
@@ -156,7 +193,7 @@ func (dialer *StandardDialer) Dial(endpointCriteria EndpointCriteria) (*grpc.Cli
 		return nil, errors.Wrap(err, "failed creating gRPC client")
 	}
 
-	return client.NewConnection(endpointCriteria.Endpoint, "")
+	return client.NewConnection(endpointCriteria.Endpoint)
 }
 
 //go:generate mockery -dir . -name BlockVerifier -case underscore -output ./mocks/
@@ -169,7 +206,7 @@ type BlockVerifier interface {
 	// based on the given configuration in the ConfigEnvelope.
 	// If the config envelope passed is nil, then the validation rules used
 	// are the ones that were applied at commit of previous blocks.
-	VerifyBlockSignature(sd []*common.SignedData, config *common.ConfigEnvelope) error
+	VerifyBlockSignature(sd []*protoutil.SignedData, config *common.ConfigEnvelope) error
 }
 
 // BlockSequenceVerifier verifies that the given consecutive sequence
@@ -197,12 +234,14 @@ func VerifyBlocks(blockBuff []*common.Block, signatureVerifier BlockVerifier) er
 	}
 
 	var config *common.ConfigEnvelope
+	var isLastBlockConfigBlock bool
 	// Verify all configuration blocks that are found inside the block batch,
 	// with the configuration that was committed (nil) or with one that is picked up
 	// during iteration over the block batch.
 	for _, block := range blockBuff {
 		configFromBlock, err := ConfigFromBlock(block)
 		if err == errNotAConfig {
+			isLastBlockConfigBlock = false
 			continue
 		}
 		if err != nil {
@@ -213,10 +252,17 @@ func VerifyBlocks(blockBuff []*common.Block, signatureVerifier BlockVerifier) er
 			return err
 		}
 		config = configFromBlock
+		isLastBlockConfigBlock = true
 	}
 
 	// Verify the last block's signature
 	lastBlock := blockBuff[len(blockBuff)-1]
+
+	// If last block is a config block, we verified it using the policy of the previous block, so it's valid.
+	if isLastBlockConfigBlock {
+		return nil
+	}
+
 	return VerifyBlockSignature(lastBlock, signatureVerifier, config)
 }
 
@@ -229,11 +275,11 @@ func ConfigFromBlock(block *common.Block) (*common.ConfigEnvelope, error) {
 		return nil, errors.New("empty block")
 	}
 	txn := block.Data.Data[0]
-	env, err := utils.GetEnvelopeFromBlock(txn)
+	env, err := protoutil.GetEnvelopeFromBlock(txn)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	payload, err := utils.GetPayload(env)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -247,7 +293,7 @@ func ConfigFromBlock(block *common.Block) (*common.ConfigEnvelope, error) {
 	if payload.Header == nil {
 		return nil, errors.New("nil header in payload")
 	}
-	chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
+	chdr, err := protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -272,7 +318,7 @@ func VerifyBlockHash(indexInBuffer int, blockBuff []*common.Block) error {
 		return errors.New("missing block header")
 	}
 	seq := block.Header.Number
-	dataHash := block.Data.Hash()
+	dataHash := protoutil.BlockDataHash(block.Data)
 	// Verify data hash matches the hash in the header
 	if !bytes.Equal(dataHash, block.Header.DataHash) {
 		computedHash := hex.EncodeToString(dataHash)
@@ -291,10 +337,10 @@ func VerifyBlockHash(indexInBuffer int, blockBuff []*common.Block) error {
 		if prevSeq+1 != currSeq {
 			return errors.Errorf("sequences %d and %d were received consecutively", prevSeq, currSeq)
 		}
-		if !bytes.Equal(block.Header.PreviousHash, prevBlock.Header.Hash()) {
+		if !bytes.Equal(block.Header.PreviousHash, protoutil.BlockHeaderHash(prevBlock.Header)) {
 			claimedPrevHash := hex.EncodeToString(block.Header.PreviousHash)
-			actualPrevHash := hex.EncodeToString(prevBlock.Header.Hash())
-			return errors.Errorf("block [%d]'s hash (%s) mismatches %d's prev block hash (%s)",
+			actualPrevHash := hex.EncodeToString(protoutil.BlockHeaderHash(prevBlock.Header))
+			return errors.Errorf("block [%d]'s hash (%s) mismatches block [%d]'s prev block hash (%s)",
 				prevSeq, actualPrevHash, currSeq, claimedPrevHash)
 		}
 	}
@@ -302,27 +348,27 @@ func VerifyBlockHash(indexInBuffer int, blockBuff []*common.Block) error {
 }
 
 // SignatureSetFromBlock creates a signature set out of a block.
-func SignatureSetFromBlock(block *common.Block) ([]*common.SignedData, error) {
+func SignatureSetFromBlock(block *common.Block) ([]*protoutil.SignedData, error) {
 	if block.Metadata == nil || len(block.Metadata.Metadata) <= int(common.BlockMetadataIndex_SIGNATURES) {
 		return nil, errors.New("no metadata in block")
 	}
-	metadata, err := utils.GetMetadataFromBlock(block, common.BlockMetadataIndex_SIGNATURES)
+	metadata, err := protoutil.GetMetadataFromBlock(block, common.BlockMetadataIndex_SIGNATURES)
 	if err != nil {
 		return nil, errors.Errorf("failed unmarshaling medatata for signatures: %v", err)
 	}
 
-	var signatureSet []*common.SignedData
+	var signatureSet []*protoutil.SignedData
 	for _, metadataSignature := range metadata.Signatures {
-		sigHdr, err := utils.GetSignatureHeader(metadataSignature.SignatureHeader)
+		sigHdr, err := protoutil.UnmarshalSignatureHeader(metadataSignature.SignatureHeader)
 		if err != nil {
 			return nil, errors.Errorf("failed unmarshaling signature header for block with id %d: %v",
 				block.Header.Number, err)
 		}
 		signatureSet = append(signatureSet,
-			&common.SignedData{
+			&protoutil.SignedData{
 				Identity: sigHdr.Creator,
 				Data: util.ConcatenateBytes(metadata.Value,
-					metadataSignature.SignatureHeader, block.Header.Bytes()),
+					metadataSignature.SignatureHeader, protoutil.BlockHeaderBytes(block.Header)),
 				Signature: metadataSignature.Signature,
 			},
 		)
@@ -345,18 +391,59 @@ type EndpointCriteria struct {
 	TLSRootCAs [][]byte // PEM encoded TLS root CA certificates
 }
 
+// String returns a string representation of this EndpointCriteria
+func (ep EndpointCriteria) String() string {
+	var formattedCAs []interface{}
+	for _, rawCAFile := range ep.TLSRootCAs {
+		var bl *pem.Block
+		pemContent := rawCAFile
+		for {
+			bl, pemContent = pem.Decode(pemContent)
+			if bl == nil {
+				break
+			}
+			cert, err := x509.ParseCertificate(bl.Bytes)
+			if err != nil {
+				break
+			}
+
+			issuedBy := cert.Issuer.String()
+			if cert.Issuer.String() == cert.Subject.String() {
+				issuedBy = "self"
+			}
+
+			info := make(map[string]interface{})
+			info["Expired"] = time.Now().After(cert.NotAfter)
+			info["Subject"] = cert.Subject.String()
+			info["Issuer"] = issuedBy
+			formattedCAs = append(formattedCAs, info)
+		}
+	}
+
+	formattedEndpointCriteria := make(map[string]interface{})
+	formattedEndpointCriteria["Endpoint"] = ep.Endpoint
+	formattedEndpointCriteria["CAs"] = formattedCAs
+
+	rawJSON, err := json.Marshal(formattedEndpointCriteria)
+	if err != nil {
+		return fmt.Sprintf("{\"Endpoint\": \"%s\"}", ep.Endpoint)
+	}
+
+	return string(rawJSON)
+}
+
 // EndpointconfigFromConfigBlock retrieves TLS CA certificates and endpoints
 // from a config block.
-func EndpointconfigFromConfigBlock(block *common.Block) ([]EndpointCriteria, error) {
+func EndpointconfigFromConfigBlock(block *common.Block, bccsp bccsp.BCCSP) ([]EndpointCriteria, error) {
 	if block == nil {
 		return nil, errors.New("nil block")
 	}
-	envelopeConfig, err := utils.ExtractEnvelope(block, 0)
+	envelopeConfig, err := protoutil.ExtractEnvelope(block, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	bundle, err := channelconfig.NewBundleFromEnvelope(envelopeConfig)
+	bundle, err := channelconfig.NewBundleFromEnvelope(envelopeConfig, bccsp)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed extracting bundle from envelope")
 	}
@@ -520,11 +607,12 @@ func (interceptor *LedgerInterceptor) Append(block *common.Block) error {
 // BlockVerifierAssembler creates a BlockVerifier out of a config envelope
 type BlockVerifierAssembler struct {
 	Logger *flogging.FabricLogger
+	BCCSP  bccsp.BCCSP
 }
 
 // VerifierFromConfig creates a BlockVerifier from the given configuration.
 func (bva *BlockVerifierAssembler) VerifierFromConfig(configuration *common.ConfigEnvelope, channel string) (BlockVerifier, error) {
-	bundle, err := channelconfig.NewBundle(channel, configuration.Config)
+	bundle, err := channelconfig.NewBundle(channel, configuration.Config, bva.BCCSP)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed extracting bundle from envelope")
 	}
@@ -534,6 +622,7 @@ func (bva *BlockVerifierAssembler) VerifierFromConfig(configuration *common.Conf
 		Logger:    bva.Logger,
 		PolicyMgr: policyMgr,
 		Channel:   channel,
+		BCCSP:     bva.BCCSP,
 	}, nil
 }
 
@@ -542,14 +631,15 @@ type BlockValidationPolicyVerifier struct {
 	Logger    *flogging.FabricLogger
 	Channel   string
 	PolicyMgr policies.Manager
+	BCCSP     bccsp.BCCSP
 }
 
 // VerifyBlockSignature verifies the signed data associated to a block, optionally with the given config envelope.
-func (bv *BlockValidationPolicyVerifier) VerifyBlockSignature(sd []*common.SignedData, envelope *common.ConfigEnvelope) error {
+func (bv *BlockValidationPolicyVerifier) VerifyBlockSignature(sd []*protoutil.SignedData, envelope *common.ConfigEnvelope) error {
 	policyMgr := bv.PolicyMgr
 	// If the envelope passed isn't nil, we should use a different policy manager.
 	if envelope != nil {
-		bundle, err := channelconfig.NewBundle(bv.Channel, envelope.Config)
+		bundle, err := channelconfig.NewBundle(bv.Channel, envelope.Config, bv.BCCSP)
 		if err != nil {
 			buff := &bytes.Buffer{}
 			protolator.DeepMarshalJSON(buff, envelope.Config)
@@ -563,7 +653,7 @@ func (bv *BlockValidationPolicyVerifier) VerifyBlockSignature(sd []*common.Signe
 	if !exists {
 		return errors.Errorf("policy %s wasn't found", policies.BlockValidation)
 	}
-	return policy.Evaluate(sd)
+	return policy.EvaluateSignedData(sd)
 }
 
 //go:generate mockery -dir . -name BlockRetriever -case underscore -output ./mocks/
@@ -583,10 +673,7 @@ func LastConfigBlock(block *common.Block, blockRetriever BlockRetriever) (*commo
 	if blockRetriever == nil {
 		return nil, errors.New("nil blockRetriever")
 	}
-	if block.Metadata == nil || len(block.Metadata.Metadata) <= int(common.BlockMetadataIndex_LAST_CONFIG) {
-		return nil, errors.New("no metadata in block")
-	}
-	lastConfigBlockNum, err := utils.GetLastConfigIndexFromBlock(block)
+	lastConfigBlockNum, err := protoutil.GetLastConfigIndexFromBlock(block)
 	if err != nil {
 		return nil, err
 	}
@@ -637,4 +724,93 @@ func (exp *certificateExpirationCheck) checkExpiration(currentTime time.Time, ch
 	exp.alert("Certificate of %s from %s for channel %s expires in less than %v",
 		exp.nodeName, exp.endpoint, channel, timeLeft)
 	exp.lastWarning = currentTime
+}
+
+// CachePublicKeyComparisons creates CertificateComparator that caches invocations based on input arguments.
+// The given CertificateComparator must be a stateless function.
+func CachePublicKeyComparisons(f CertificateComparator) CertificateComparator {
+	m := &ComparisonMemoizer{
+		MaxEntries: 4096,
+		F:          f,
+	}
+	return m.Compare
+}
+
+// ComparisonMemoizer speeds up comparison computations by caching past invocations of a stateless function
+type ComparisonMemoizer struct {
+	// Configuration
+	F          func(a, b []byte) bool
+	MaxEntries uint16
+	// Internal state
+	cache map[arguments]bool
+	lock  sync.RWMutex
+	once  sync.Once
+	rand  *rand.Rand
+}
+
+type arguments struct {
+	a, b string
+}
+
+// Size returns the number of computations the ComparisonMemoizer currently caches.
+func (cm *ComparisonMemoizer) Size() int {
+	cm.lock.RLock()
+	defer cm.lock.RUnlock()
+	return len(cm.cache)
+}
+
+// Compare compares the given two byte slices.
+// It may return previous computations for the given two arguments,
+// otherwise it will compute the function F and cache the result.
+func (cm *ComparisonMemoizer) Compare(a, b []byte) bool {
+	cm.once.Do(cm.setup)
+	key := arguments{
+		a: string(a),
+		b: string(b),
+	}
+
+	cm.lock.RLock()
+	result, exists := cm.cache[key]
+	cm.lock.RUnlock()
+
+	if exists {
+		return result
+	}
+
+	result = cm.F(a, b)
+
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	cm.shrinkIfNeeded()
+	cm.cache[key] = result
+
+	return result
+}
+
+func (cm *ComparisonMemoizer) shrinkIfNeeded() {
+	for {
+		currentSize := uint16(len(cm.cache))
+		if currentSize < cm.MaxEntries {
+			return
+		}
+		cm.shrink()
+	}
+}
+
+func (cm *ComparisonMemoizer) shrink() {
+	// Shrink the cache by 25% by removing every fourth element (on average)
+	for key := range cm.cache {
+		if cm.rand.Int()%4 != 0 {
+			continue
+		}
+		delete(cm.cache, key)
+	}
+}
+
+func (cm *ComparisonMemoizer) setup() {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+	cm.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	cm.cache = make(map[arguments]bool)
 }

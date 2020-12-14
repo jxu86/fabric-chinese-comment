@@ -20,17 +20,19 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/hyperledger/fabric/common/flogging"
-	false_crypto "github.com/hyperledger/fabric/common/mocks/crypto"
-	"github.com/hyperledger/fabric/core/comm"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
+	"github.com/hyperledger/fabric/internal/pkg/identity"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/orderer/common/cluster/mocks"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/onsi/gomega"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
@@ -45,8 +47,15 @@ func init() {
 	factory.InitFactories(nil)
 }
 
+//go:generate counterfeiter -o mocks/signer_serializer.go --fake-name SignerSerializer . signerSerializer
+
+type signerSerializer interface {
+	identity.SignerSerializer
+}
+
 type wrappedBalancer struct {
 	balancer.Balancer
+	balancer.V2Balancer
 	cd *countingDialer
 }
 
@@ -82,7 +91,12 @@ func newCountingDialer() *countingDialer {
 
 func (d *countingDialer) Build(cc balancer.ClientConn, opts balancer.BuildOptions) balancer.Balancer {
 	defer atomic.AddUint32(&d.connectionCount, 1)
-	return &wrappedBalancer{Balancer: d.baseBuilder.Build(cc, opts), cd: d}
+	lb := d.baseBuilder.Build(cc, opts)
+	return &wrappedBalancer{
+		Balancer:   lb,
+		V2Balancer: lb.(balancer.V2Balancer),
+		cd:         d,
+	}
 }
 
 func (d *countingDialer) Name() string {
@@ -116,7 +130,7 @@ func readSeekEnvelope(stream orderer.AtomicBroadcast_DeliverServer) (*orderer.Se
 	if err != nil {
 		return nil, "", err
 	}
-	payload, err := utils.UnmarshalPayload(env.Payload)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
 		return nil, "", err
 	}
@@ -166,9 +180,19 @@ func (ds *deliverServer) Deliver(stream orderer.AtomicBroadcast_DeliverServer) e
 	if err != nil {
 		panic(err)
 	}
+
+	// FAB-16233 This is meant to mitigate timeouts when
+	// seekAssertions does not receive a value
+	timer := time.NewTimer(1 * time.Minute)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		panic("timed out waiting for seek assertions to receive a value")
 	// Get the next seek assertion and ensure the next seek is of the expected type
-	seekAssert := <-ds.seekAssertions
-	seekAssert(seekInfo, channel)
+	case seekAssert := <-ds.seekAssertions:
+		seekAssert(seekInfo, channel)
+	}
 
 	if seekInfo.GetStart().GetSpecified() != nil {
 		return ds.deliverBlocks(stream)
@@ -245,7 +269,7 @@ func (ds *deliverServer) stop() {
 
 func (ds *deliverServer) enqueueResponse(seq uint64) {
 	ds.blocks() <- &orderer.DeliverResponse{
-		Type: &orderer.DeliverResponse_Block{Block: common.NewBlock(seq, nil)},
+		Type: &orderer.DeliverResponse_Block{Block: protoutil.NewBlock(seq, nil)},
 	}
 }
 
@@ -258,8 +282,11 @@ func (ds *deliverServer) addExpectProbeAssert() {
 
 func (ds *deliverServer) addExpectPullAssert(seq uint64) {
 	ds.seekAssertions <- func(info *orderer.SeekInfo, _ string) {
-		assert.NotNil(ds.t, info.GetStart().GetSpecified())
-		assert.Equal(ds.t, seq, info.GetStart().GetSpecified().Number)
+		seekPosition := info.GetStart()
+		require.NotNil(ds.t, seekPosition)
+		seekSpecified := seekPosition.GetSpecified()
+		require.NotNil(ds.t, seekSpecified)
+		assert.Equal(ds.t, seq, seekSpecified.Number)
 		assert.Equal(ds.t, info.ErrorResponse, orderer.SeekInfo_BEST_EFFORT)
 	}
 }
@@ -284,9 +311,9 @@ func newBlockPuller(dialer *countingDialer, orderers ...string) *cluster.BlockPu
 	return &cluster.BlockPuller{
 		Dialer:              dialer,
 		Channel:             "mychannel",
-		Signer:              &false_crypto.LocalSigner{},
+		Signer:              &mocks.SignerSerializer{},
 		Endpoints:           endpointCriteriaFromEndpoints(orderers...),
-		FetchTimeout:        time.Second,
+		FetchTimeout:        time.Second * 10,
 		MaxTotalBufferBytes: 1024 * 1024, // 1MB
 		RetryTimeout:        time.Millisecond * 10,
 		VerifyBlockSequence: noopBlockVerifierf,
@@ -381,7 +408,7 @@ func TestBlockPullerHeavyBlocks(t *testing.T) {
 		for seq := start; seq <= end; seq++ {
 			resp := &orderer.DeliverResponse{
 				Type: &orderer.DeliverResponse_Block{
-					Block: common.NewBlock(seq, nil),
+					Block: protoutil.NewBlock(seq, nil),
 				},
 			}
 			data := resp.GetBlock().Data.Data

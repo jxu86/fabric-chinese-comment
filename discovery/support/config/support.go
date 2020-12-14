@@ -12,12 +12,12 @@ import (
 	"strconv"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/discovery"
+	"github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
 	mspconstants "github.com/hyperledger/fabric/msp"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/discovery"
-	"github.com/hyperledger/fabric/protos/msp"
 	"github.com/pkg/errors"
 )
 
@@ -180,7 +180,7 @@ func perOrgEndpointsByMSPID(ordererGrp map[string]*common.ConfigGroup) (map[stri
 		res[fabricConfig.Name] = nil
 
 		// If the key has a corresponding value, it should unmarshal successfully.
-		if perOrgAddresses := group.Values["Endpoints"]; perOrgAddresses != nil {
+		if perOrgAddresses := group.Values[channelconfig.EndpointsKey]; perOrgAddresses != nil {
 			ordererEndpoints := &common.OrdererAddresses{}
 			if err := proto.Unmarshal(perOrgAddresses.Value, ordererEndpoints); err != nil {
 				return nil, errors.Wrap(err, "failed unmarshaling orderer addresses")
@@ -263,9 +263,6 @@ func ValidateConfigEnvelope(ce *common.ConfigEnvelope) error {
 	}
 	if ce.Config.ChannelGroup.Values == nil {
 		return fmt.Errorf("field Config.ChannelGroup.Values is nil")
-	}
-	if _, exists := ce.Config.ChannelGroup.Values[channelconfig.OrdererAddressesKey]; !exists {
-		return fmt.Errorf("field Config.ChannelGroup.Values is empty")
 	}
 	return nil
 }

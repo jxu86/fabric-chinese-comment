@@ -5,55 +5,99 @@ package server
 
 import (
 	"fmt"
+	"github.com/hyperledger/fabric/orderer/common/onboarding"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
-	deliver_mocks "github.com/hyperledger/fabric/common/deliver/mock"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/flogging/floggingtest"
 	"github.com/hyperledger/fabric/common/ledger/blockledger"
-	ledger_mocks "github.com/hyperledger/fabric/common/ledger/blockledger/mocks"
-	ramledger "github.com/hyperledger/fabric/common/ledger/blockledger/ram"
-	"github.com/hyperledger/fabric/common/localmsp"
+	"github.com/hyperledger/fabric/common/ledger/blockledger/fileledger"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/common/metrics/prometheus"
-	"github.com/hyperledger/fabric/common/mocks/crypto"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/configtxgentest"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
-	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/config/configtest"
+	"github.com/hyperledger/fabric/internal/configtxgen/encoder"
+	"github.com/hyperledger/fabric/internal/configtxgen/genesisconfig"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
+	"github.com/hyperledger/fabric/internal/pkg/identity"
+	"github.com/hyperledger/fabric/orderer/common/bootstrap/file"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/common/multichannel"
-	"github.com/hyperledger/fabric/orderer/common/server/mocks"
 	server_mocks "github.com/hyperledger/fabric/orderer/common/server/mocks"
 	"github.com/hyperledger/fabric/orderer/consensus"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gexec"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
+//go:generate counterfeiter -o mocks/signer_serializer.go --fake-name SignerSerializer . signerSerializer
+
+type signerSerializer interface {
+	identity.SignerSerializer
+}
+
+// the path to cryptogen, which can be used by tests to create certificates
+var cryptogen, tempDir string
+
+func TestMain(m *testing.M) {
+	var err error
+	cryptogen, err = gexec.Build("github.com/hyperledger/fabric/cmd/cryptogen")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cryptogen build failed: %v", err)
+		os.Exit(-1)
+	}
+	defer gexec.CleanupBuildArtifacts()
+
+	tempDir, err = ioutil.TempDir("", "main-test")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create temporary directory: %v", err)
+		os.Exit(-1)
+	}
+	defer os.RemoveAll(tempDir)
+
+	copyYamlFiles("testdata", tempDir)
+
+	os.Exit(m.Run())
+}
+
+func copyYamlFiles(src, dst string) {
+	for _, file := range []string{"configtx.yaml", "examplecom-config.yaml", "orderer.yaml"} {
+		fileBytes, err := ioutil.ReadFile(filepath.Join(src, file))
+		if err != nil {
+			os.Exit(-1)
+		}
+		err = ioutil.WriteFile(filepath.Join(dst, file), fileBytes, 0644)
+		if err != nil {
+			os.Exit(-1)
+		}
+	}
+}
+
 func TestInitializeLogging(t *testing.T) {
 	origEnvValue := os.Getenv("FABRIC_LOGGING_SPEC")
 	os.Setenv("FABRIC_LOGGING_SPEC", "foo=debug")
 	initializeLogging()
-	assert.Equal(t, "debug", flogging.Global.Level("foo").String())
+	assert.Equal(t, "debug", flogging.LoggerLevel("foo"))
 	os.Setenv("FABRIC_LOGGING_SPEC", origEnvValue)
 }
 
@@ -67,7 +111,7 @@ func TestInitializeProfilingService(t *testing.T) {
 		l.Close()
 		return l.Addr().String()
 	}()
-	initializeProfilingService(
+	go initializeProfilingService(
 		&localconfig.TopLevel{
 			General: localconfig.General{
 				Profile: localconfig.Profile{
@@ -102,6 +146,13 @@ func TestInitializeServerConfig(t *testing.T) {
 		},
 	}
 	sc := initializeServerConfig(conf, nil)
+	expectedContent, _ := ioutil.ReadFile("main.go")
+	assert.Equal(t, expectedContent, sc.SecOpts.Certificate)
+	assert.Equal(t, expectedContent, sc.SecOpts.Key)
+	assert.Equal(t, [][]byte{expectedContent}, sc.SecOpts.ServerRootCAs)
+	assert.Equal(t, [][]byte{expectedContent}, sc.SecOpts.ClientRootCAs)
+
+	sc = initializeServerConfig(conf, nil)
 	defaultOpts := comm.DefaultKeepaliveOptions
 	assert.Equal(t, defaultOpts.ServerMinInterval, sc.KaOpts.ServerMinInterval)
 	assert.Equal(t, time.Duration(0), sc.KaOpts.ServerInterval)
@@ -120,12 +171,12 @@ func TestInitializeServerConfig(t *testing.T) {
 
 	sc = initializeServerConfig(conf, nil)
 	assert.NotNil(t, sc.Logger)
-	assert.Equal(t, &disabled.Provider{}, sc.MetricsProvider)
+	assert.Equal(t, comm.NewServerStatsHandler(&disabled.Provider{}), sc.ServerStatsHandler)
 	assert.Len(t, sc.UnaryInterceptors, 2)
 	assert.Len(t, sc.StreamInterceptors, 2)
 
 	sc = initializeServerConfig(conf, &prometheus.Provider{})
-	assert.Equal(t, &prometheus.Provider{}, sc.MetricsProvider)
+	assert.NotNil(t, sc.ServerStatsHandler)
 
 	goodFile := "main.go"
 	badFile := "does_not_exist"
@@ -175,7 +226,7 @@ func TestInitializeServerConfig(t *testing.T) {
 				if tc.clusterCert == "" {
 					initializeServerConfig(conf, nil)
 				} else {
-					initializeClusterClientConfig(conf, false, nil)
+					initializeClusterClientConfig(conf)
 				}
 			},
 			)
@@ -187,66 +238,81 @@ func TestInitializeBootstrapChannel(t *testing.T) {
 	cleanup := configtest.SetDevFabricConfigPath(t)
 	defer cleanup()
 
-	testCases := []struct {
-		genesisMethod string
-		ledgerType    string
-		panics        bool
-	}{
-		{"provisional", "ram", false},
-		{"provisional", "file", false},
-		{"provisional", "json", false},
-		{"invalid", "ram", true},
-		{"file", "ram", true},
+	genesisFile := produceGenesisFile(t, genesisconfig.SampleSingleMSPSoloProfile, "testchannelid")
+	defer os.Remove(genesisFile)
+
+	fileLedgerLocation, _ := ioutil.TempDir("", "main_test-")
+	defer os.RemoveAll(fileLedgerLocation)
+
+	ledgerFactory, _, err := createLedgerFactory(
+		&localconfig.TopLevel{
+			FileLedger: localconfig.FileLedger{
+				Location: fileLedgerLocation,
+			},
+		},
+		&disabled.Provider{},
+	)
+	assert.NoError(t, err)
+	bootstrapConfig := &localconfig.TopLevel{
+		General: localconfig.General{
+			BootstrapMethod: "file",
+			BootstrapFile:   genesisFile,
+		},
 	}
 
-	for _, tc := range testCases {
+	bootstrapBlock := extractBootstrapBlock(bootstrapConfig)
+	initializeBootstrapChannel(bootstrapBlock, ledgerFactory)
 
-		t.Run(tc.genesisMethod+"/"+tc.ledgerType, func(t *testing.T) {
+	ledger, err := ledgerFactory.GetOrCreate("testchannelid")
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1), ledger.Height())
+}
 
-			fileLedgerLocation, _ := ioutil.TempDir("", "test-ledger")
-			ledgerFactory, _ := createLedgerFactory(
-				&localconfig.TopLevel{
-					General: localconfig.General{LedgerType: tc.ledgerType},
-					FileLedger: localconfig.FileLedger{
-						Location: fileLedgerLocation,
-					},
-				},
-				&disabled.Provider{},
-			)
+func TestExtractBootstrapBlock(t *testing.T) {
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
-			bootstrapConfig := &localconfig.TopLevel{
-				General: localconfig.General{
-					GenesisMethod:  tc.genesisMethod,
-					GenesisProfile: "SampleSingleMSPSolo",
-					GenesisFile:    "genesisblock",
-					SystemChannel:  genesisconfig.TestChainID,
-				},
-			}
+	genesisFile := produceGenesisFile(t, genesisconfig.SampleSingleMSPSoloProfile, "testchannelid")
+	defer os.Remove(genesisFile)
 
-			if tc.panics {
-				assert.Panics(t, func() {
-					genesisBlock := extractBootstrapBlock(bootstrapConfig)
-					initializeBootstrapChannel(genesisBlock, ledgerFactory)
-				})
-			} else {
-				assert.NotPanics(t, func() {
-					genesisBlock := extractBootstrapBlock(bootstrapConfig)
-					initializeBootstrapChannel(genesisBlock, ledgerFactory)
-				})
-			}
-		})
+	tests := []struct {
+		config *localconfig.TopLevel
+		block  *common.Block
+	}{
+		{
+			config: &localconfig.TopLevel{
+				General: localconfig.General{BootstrapMethod: "file", BootstrapFile: genesisFile},
+			},
+			block: file.New(genesisFile).GenesisBlock(),
+		},
+		{
+			config: &localconfig.TopLevel{
+				General: localconfig.General{BootstrapMethod: "none"},
+			},
+			block: nil,
+		},
+	}
+	for _, tt := range tests {
+		b := extractBootstrapBlock(tt.config)
+		assert.Truef(t, proto.Equal(tt.block, b), "wanted %v, got %v", tt.block, b)
 	}
 }
 
 func TestExtractSysChanLastConfig(t *testing.T) {
-	rlf := ramledger.New(10)
-	conf := configtxgentest.Load(genesisconfig.SampleInsecureSoloProfile)
+	tmpdir, err := ioutil.TempDir("", "main_test-")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpdir)
+
+	rlf, err := fileledger.New(tmpdir, &disabled.Provider{})
+	require.NoError(t, err)
+
+	conf := genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile, configtest.GetDevConfigDir())
 	genesisBlock := encoder.New(conf).GenesisBlock()
 
 	lastConf := extractSysChanLastConfig(rlf, genesisBlock)
 	assert.Nil(t, lastConf)
 
-	rl, err := rlf.GetOrCreate(genesisconfig.TestChainID)
+	rl, err := rlf.GetOrCreate("testchannelid")
 	require.NoError(t, err)
 
 	err = rl.Append(genesisBlock)
@@ -260,12 +326,17 @@ func TestExtractSysChanLastConfig(t *testing.T) {
 		_ = extractSysChanLastConfig(rlf, nil)
 	})
 
-	configTx, err := utils.CreateSignedEnvelope(common.HeaderType_CONFIG, genesisconfig.TestChainID, nil, &common.ConfigEnvelope{}, 0, 0)
+	configTx, err := protoutil.CreateSignedEnvelope(common.HeaderType_CONFIG, "testchannelid", nil, &common.ConfigEnvelope{}, 0, 0)
 	require.NoError(t, err)
 
 	nextBlock := blockledger.CreateNextBlock(rl, []*common.Envelope{configTx})
-	nextBlock.Metadata.Metadata[common.BlockMetadataIndex_LAST_CONFIG] = utils.MarshalOrPanic(&common.Metadata{
-		Value: utils.MarshalOrPanic(&common.LastConfig{Index: rl.Height()}),
+	nextBlock.Metadata.Metadata[common.BlockMetadataIndex_SIGNATURES] = protoutil.MarshalOrPanic(&common.Metadata{
+		Value: protoutil.MarshalOrPanic(&common.OrdererBlockMetadata{
+			LastConfig: &common.LastConfig{Index: rl.Height()},
+		}),
+	})
+	nextBlock.Metadata.Metadata[common.BlockMetadataIndex_LAST_CONFIG] = protoutil.MarshalOrPanic(&common.Metadata{
+		Value: protoutil.MarshalOrPanic(&common.LastConfig{Index: rl.Height()}),
 	})
 	err = rl.Append(nextBlock)
 	require.NoError(t, err)
@@ -304,51 +375,103 @@ func TestSelectClusterBootBlock(t *testing.T) {
 
 func TestLoadLocalMSP(t *testing.T) {
 	t.Run("Happy", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			localMSPDir, _ := configtest.GetDevMspDir()
-			initializeLocalMsp(
-				&localconfig.TopLevel{
-					General: localconfig.General{
-						LocalMSPDir: localMSPDir,
-						LocalMSPID:  "SampleOrg",
-						BCCSP: &factory.FactoryOpts{
-							ProviderName: "SW",
-							SwOpts: &factory.SwOpts{
-								HashFamily: "SHA2",
-								SecLevel:   256,
-								Ephemeral:  true,
-							},
+		localMSPDir := configtest.GetDevMspDir()
+		localMSP := loadLocalMSP(
+			&localconfig.TopLevel{
+				General: localconfig.General{
+					LocalMSPDir: localMSPDir,
+					LocalMSPID:  "SampleOrg",
+					BCCSP: &factory.FactoryOpts{
+						ProviderName: "SW",
+						SwOpts: &factory.SwOpts{
+							HashFamily: "SHA2",
+							SecLevel:   256,
+							Ephemeral:  true,
 						},
 					},
-				})
-		})
+				},
+			},
+		)
+		require.NotNil(t, localMSP)
+		id, err := localMSP.GetIdentifier()
+		require.NoError(t, err)
+		require.Equal(t, id, "SampleOrg")
 	})
+
 	t.Run("Error", func(t *testing.T) {
 		oldLogger := logger
 		defer func() { logger = oldLogger }()
 		logger, _ = floggingtest.NewTestLogger(t)
 
 		assert.Panics(t, func() {
-			initializeLocalMsp(
+			loadLocalMSP(
 				&localconfig.TopLevel{
 					General: localconfig.General{
 						LocalMSPDir: "",
 						LocalMSPID:  "",
 					},
-				})
+				},
+			)
 		})
 	})
 }
 
-func TestInitializeMultiChainManager(t *testing.T) {
+func TestInitializeMultichannelRegistrar(t *testing.T) {
 	cleanup := configtest.SetDevFabricConfigPath(t)
 	defer cleanup()
-	conf := genesisConfig(t)
-	assert.NotPanics(t, func() {
-		initializeLocalMsp(conf)
-		lf, _ := createLedgerFactory(conf, &disabled.Provider{})
-		bootBlock := encoder.New(genesisconfig.Load(genesisconfig.SampleDevModeSoloProfile)).GenesisBlockForChannel("system")
-		initializeMultichannelRegistrar(bootBlock, &replicationInitiator{}, &cluster.PredicateDialer{}, comm.ServerConfig{}, nil, conf, localmsp.NewSigner(), &disabled.Provider{}, &mocks.HealthChecker{}, lf)
+	genesisFile := produceGenesisFile(t, genesisconfig.SampleDevModeSoloProfile, "testchannelid")
+	defer os.Remove(genesisFile)
+
+	conf := genesisConfig(t, genesisFile)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
+	signer := &server_mocks.SignerSerializer{}
+
+	t.Run("registrar with a system channel", func(t *testing.T) {
+		lf, _, err := createLedgerFactory(conf, &disabled.Provider{})
+		assert.NoError(t, err)
+		bootBlock := file.New(genesisFile).GenesisBlock()
+		initializeBootstrapChannel(bootBlock, lf)
+		registrar := initializeMultichannelRegistrar(
+			bootBlock,
+			onboarding.NewReplicationInitiator(lf, bootBlock, conf, comm.SecureOptions{}, signer, cryptoProvider),
+			&cluster.PredicateDialer{},
+			comm.ServerConfig{},
+			nil,
+			conf,
+			signer,
+			&disabled.Provider{},
+			&server_mocks.HealthChecker{},
+			lf,
+			cryptoProvider,
+		)
+		assert.NotNil(t, registrar)
+		assert.Equal(t, "testchannelid", registrar.SystemChannelID())
+	})
+
+	t.Run("registrar without a system channel", func(t *testing.T) {
+		conf.General.BootstrapMethod = "none"
+		conf.General.GenesisFile = ""
+		srv, err := comm.NewGRPCServer("127.0.0.1:0", comm.ServerConfig{})
+		assert.NoError(t, err)
+		lf, _, err := createLedgerFactory(conf, &disabled.Provider{})
+		assert.NoError(t, err)
+		registrar := initializeMultichannelRegistrar(
+			nil,
+			nil,
+			&cluster.PredicateDialer{},
+			comm.ServerConfig{},
+			srv,
+			conf,
+			signer,
+			&disabled.Provider{},
+			&server_mocks.HealthChecker{},
+			lf,
+			cryptoProvider,
+		)
+		assert.NotNil(t, registrar)
+		assert.Empty(t, registrar.SystemChannelID())
 	})
 }
 
@@ -377,10 +500,35 @@ func TestInitializeGrpcServer(t *testing.T) {
 	})
 }
 
+// generateCryptoMaterials uses cryptogen to generate the necessary
+// MSP files and TLS certificates
+func generateCryptoMaterials(t *testing.T, cryptogen string) string {
+	gt := NewGomegaWithT(t)
+	cryptoPath := filepath.Join(tempDir, "crypto")
+
+	cmd := exec.Command(
+		cryptogen,
+		"generate",
+		"--config", filepath.Join(tempDir, "examplecom-config.yaml"),
+		"--output", cryptoPath,
+	)
+	cryptogenProcess, err := gexec.Start(cmd, nil, nil)
+	gt.Expect(err).NotTo(HaveOccurred())
+	gt.Eventually(cryptogenProcess, time.Minute).Should(gexec.Exit(0))
+
+	return cryptoPath
+}
+
 func TestUpdateTrustedRoots(t *testing.T) {
 	cleanup := configtest.SetDevFabricConfigPath(t)
 	defer cleanup()
-	initializeLocalMsp(genesisConfig(t))
+
+	genesisFile := produceGenesisFile(t, genesisconfig.SampleDevModeSoloProfile, "testchannelid")
+	defer os.Remove(genesisFile)
+
+	cryptoPath := generateCryptoMaterials(t, cryptogen)
+	defer os.RemoveAll(cryptoPath)
+
 	// get a free random port
 	listenAddr := func() string {
 		l, _ := net.Listen("tcp", "localhost:0")
@@ -390,8 +538,10 @@ func TestUpdateTrustedRoots(t *testing.T) {
 	port, _ := strconv.ParseUint(strings.Split(listenAddr, ":")[1], 10, 16)
 	conf := &localconfig.TopLevel{
 		General: localconfig.General{
-			ListenAddress: "localhost",
-			ListenPort:    uint16(port),
+			BootstrapMethod: "file",
+			BootstrapFile:   genesisFile,
+			ListenAddress:   "localhost",
+			ListenPort:      uint16(port),
 			TLS: localconfig.TLS{
 				Enabled:            false,
 				ClientAuthRequired: false,
@@ -399,24 +549,44 @@ func TestUpdateTrustedRoots(t *testing.T) {
 		},
 	}
 	grpcServer := initializeGrpcServer(conf, initializeServerConfig(conf, nil))
-	caSupport := &comm.CredentialSupport{
-		AppRootCAsByChain:           make(map[string]comm.CertificateBundle),
-		OrdererRootCAsByChainAndOrg: make(comm.OrgRootCAs),
+	caMgr := &caManager{
+		appRootCAsByChain:     make(map[string][][]byte),
+		ordererRootCAsByChain: make(map[string][][]byte),
 	}
 	callback := func(bundle *channelconfig.Bundle) {
 		if grpcServer.MutualTLSRequired() {
 			t.Log("callback called")
-			updateTrustedRoots(caSupport, bundle, grpcServer)
+			caMgr.updateTrustedRoots(bundle, grpcServer)
 		}
 	}
-	lf, _ := createLedgerFactory(conf, &disabled.Provider{})
-	bootBlock := encoder.New(genesisconfig.Load(genesisconfig.SampleDevModeSoloProfile)).GenesisBlockForChannel("system")
-	initializeMultichannelRegistrar(bootBlock, &replicationInitiator{}, &cluster.PredicateDialer{}, comm.ServerConfig{}, nil, genesisConfig(t), localmsp.NewSigner(), &disabled.Provider{}, &mocks.HealthChecker{}, lf, callback)
-	t.Logf("# app CAs: %d", len(caSupport.AppRootCAsByChain[genesisconfig.TestChainID]))
-	t.Logf("# orderer CAs: %d", len(caSupport.OrdererRootCAsByChainAndOrg[genesisconfig.TestChainID]["SampleOrg"]))
+	lf, _, err := createLedgerFactory(conf, &disabled.Provider{})
+	assert.NoError(t, err)
+	bootBlock := file.New(genesisFile).GenesisBlock()
+	initializeBootstrapChannel(bootBlock, lf)
+	signer := &server_mocks.SignerSerializer{}
+
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
+	initializeMultichannelRegistrar(
+		bootBlock,
+		onboarding.NewReplicationInitiator(lf, bootBlock, conf, comm.SecureOptions{}, signer, cryptoProvider),
+		&cluster.PredicateDialer{},
+		comm.ServerConfig{},
+		nil,
+		genesisConfig(t, genesisFile),
+		signer,
+		&disabled.Provider{},
+		&server_mocks.HealthChecker{},
+		lf,
+		cryptoProvider,
+		callback,
+	)
+	t.Logf("# app CAs: %d", len(caMgr.appRootCAsByChain["testchannelid"]))
+	t.Logf("# orderer CAs: %d", len(caMgr.ordererRootCAsByChain["testchannelid"]))
 	// mutual TLS not required so no updates should have occurred
-	assert.Equal(t, 0, len(caSupport.AppRootCAsByChain[genesisconfig.TestChainID]))
-	assert.Equal(t, 0, len(caSupport.OrdererRootCAsByChainAndOrg[genesisconfig.TestChainID]["SampleOrg"]))
+	assert.Equal(t, 0, len(caMgr.appRootCAsByChain["testchannelid"]))
+	assert.Equal(t, 0, len(caMgr.ordererRootCAsByChain["testchannelid"]))
 	grpcServer.Listener().Close()
 
 	conf = &localconfig.TopLevel{
@@ -426,49 +596,50 @@ func TestUpdateTrustedRoots(t *testing.T) {
 			TLS: localconfig.TLS{
 				Enabled:            true,
 				ClientAuthRequired: true,
-				PrivateKey:         filepath.Join(".", "testdata", "tls", "server.key"),
-				Certificate:        filepath.Join(".", "testdata", "tls", "server.crt"),
+				PrivateKey:         filepath.Join(cryptoPath, "ordererOrganizations", "example.com", "orderers", "127.0.0.1.example.com", "tls", "server.key"),
+				Certificate:        filepath.Join(cryptoPath, "ordererOrganizations", "example.com", "orderers", "127.0.0.1.example.com", "tls", "server.crt"),
 			},
 		},
 	}
 	grpcServer = initializeGrpcServer(conf, initializeServerConfig(conf, nil))
-	caSupport = &comm.CredentialSupport{
-		AppRootCAsByChain:           make(map[string]comm.CertificateBundle),
-		OrdererRootCAsByChainAndOrg: make(comm.OrgRootCAs),
+	caMgr = &caManager{
+		appRootCAsByChain:     make(map[string][][]byte),
+		ordererRootCAsByChain: make(map[string][][]byte),
 	}
 
-	clusterConf := initializeClusterClientConfig(conf, true, nil)
+	clusterConf := initializeClusterClientConfig(conf)
 	predDialer := &cluster.PredicateDialer{
-		ClientConfig: clusterConf,
+		Config: clusterConf,
 	}
 
 	callback = func(bundle *channelconfig.Bundle) {
 		if grpcServer.MutualTLSRequired() {
 			t.Log("callback called")
-			updateTrustedRoots(caSupport, bundle, grpcServer)
-			updateClusterDialer(caSupport, predDialer, clusterConf.SecOpts.ServerRootCAs)
+			caMgr.updateTrustedRoots(bundle, grpcServer)
+			caMgr.updateClusterDialer(predDialer, clusterConf.SecOpts.ServerRootCAs)
 		}
 	}
 	initializeMultichannelRegistrar(
 		bootBlock,
-		&replicationInitiator{},
+		onboarding.NewReplicationInitiator(lf, bootBlock, conf, comm.SecureOptions{}, signer, cryptoProvider),
 		predDialer,
 		comm.ServerConfig{},
 		nil,
-		genesisConfig(t),
-		localmsp.NewSigner(),
+		genesisConfig(t, genesisFile),
+		signer,
 		&disabled.Provider{},
 		&server_mocks.HealthChecker{},
 		lf,
+		cryptoProvider,
 		callback,
 	)
-	t.Logf("# app CAs: %d", len(caSupport.AppRootCAsByChain[genesisconfig.TestChainID]))
-	t.Logf("# orderer CAs: %d", len(caSupport.OrdererRootCAsByChainAndOrg[genesisconfig.TestChainID]["SampleOrg"]))
+	t.Logf("# app CAs: %d", len(caMgr.appRootCAsByChain["testchannelid"]))
+	t.Logf("# orderer CAs: %d", len(caMgr.ordererRootCAsByChain["testchannelid"]))
 	// mutual TLS is required so updates should have occurred
 	// we expect an intermediate and root CA for apps and orderers
-	assert.Equal(t, 2, len(caSupport.AppRootCAsByChain[genesisconfig.TestChainID]))
-	assert.Equal(t, 2, len(caSupport.OrdererRootCAsByChainAndOrg[genesisconfig.TestChainID]["SampleOrg"]))
-	assert.Len(t, predDialer.ClientConfig.SecOpts.ServerRootCAs, 2)
+	assert.Equal(t, 2, len(caMgr.appRootCAsByChain["testchannelid"]))
+	assert.Equal(t, 2, len(caMgr.ordererRootCAsByChain["testchannelid"]))
+	assert.Len(t, predDialer.Config.SecOpts.ServerRootCAs, 2)
 	grpcServer.Listener().Close()
 }
 
@@ -490,7 +661,7 @@ func TestConfigureClusterListener(t *testing.T) {
 	unUsedPort := allocatePort()
 
 	backupLogger := logger
-	logger = logger.With(zap.Hooks(func(entry zapcore.Entry) error {
+	logger = logger.WithOptions(zap.Hooks(func(entry zapcore.Entry) error {
 		logEntries <- entry.Message
 		return nil
 	}))
@@ -527,30 +698,6 @@ func TestConfigureClusterListener(t *testing.T) {
 		expectedLogEntries []string
 	}{
 		{
-			name:          "no separate listener",
-			shouldBeEqual: true,
-			generalConf:   comm.ServerConfig{},
-			conf:          &localconfig.TopLevel{},
-			generalSrv:    &comm.GRPCServer{},
-		},
-		{
-			name:        "partial configuration",
-			generalConf: comm.ServerConfig{},
-			conf: &localconfig.TopLevel{
-				General: localconfig.General{
-					Cluster: localconfig.Cluster{
-						ListenPort: 5000,
-					},
-				},
-			},
-			expectedPanic: "Options: General.Cluster.ListenPort, General.Cluster.ListenAddress, " +
-				"General.Cluster.ServerCertificate, General.Cluster.ServerPrivateKey, should be defined altogether.",
-			generalSrv: &comm.GRPCServer{},
-			expectedLogEntries: []string{"Options: General.Cluster.ListenPort, General.Cluster.ListenAddress, " +
-				"General.Cluster.ServerCertificate," +
-				" General.Cluster.ServerPrivateKey, should be defined altogether."},
-		},
-		{
 			name:        "invalid certificate",
 			generalConf: comm.ServerConfig{},
 			conf: &localconfig.TopLevel{
@@ -584,7 +731,7 @@ func TestConfigureClusterListener(t *testing.T) {
 			},
 			expectedPanic:      "Failed to load cluster server key from 'bad' (I/O error)",
 			generalSrv:         &comm.GRPCServer{},
-			expectedLogEntries: []string{"Failed to load cluster server certificate from 'bad' (I/O error)"},
+			expectedLogEntries: []string{"Failed to load cluster server key from 'bad' (I/O error)"},
 		},
 		{
 			name:        "invalid ca cert",
@@ -600,9 +747,9 @@ func TestConfigureClusterListener(t *testing.T) {
 					},
 				},
 			},
-			expectedPanic:      "Failed to load CA cert file 'I/O error' (bad)",
+			expectedPanic:      "Failed to load CA cert file 'bad' (I/O error)",
 			generalSrv:         &comm.GRPCServer{},
-			expectedLogEntries: []string{"Failed to load CA cert file 'I/O error' (bad)"},
+			expectedLogEntries: []string{"Failed to load CA cert file 'bad' (I/O error)"},
 		},
 		{
 			name:        "bad listen address",
@@ -641,18 +788,18 @@ func TestConfigureClusterListener(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			if testCase.shouldBeEqual {
-				conf, srv := configureClusterListener(testCase.conf, testCase.generalConf, testCase.generalSrv, loadPEM)
+				conf, srv := configureClusterListener(testCase.conf, testCase.generalConf, loadPEM)
 				assert.Equal(t, conf, testCase.generalConf)
 				assert.Equal(t, srv, testCase.generalSrv)
 			}
 
 			if testCase.expectedPanic != "" {
 				f := func() {
-					configureClusterListener(testCase.conf, testCase.generalConf, testCase.generalSrv, loadPEM)
+					configureClusterListener(testCase.conf, testCase.generalConf, loadPEM)
 				}
 				assert.Contains(t, panicMsg(f), testCase.expectedPanic)
 			} else {
-				configureClusterListener(testCase.conf, testCase.generalConf, testCase.generalSrv, loadPEM)
+				configureClusterListener(testCase.conf, testCase.generalConf, loadPEM)
 			}
 			// Ensure logged messages that are expected were all logged
 			var loggedMessages []string
@@ -660,16 +807,69 @@ func TestConfigureClusterListener(t *testing.T) {
 				logEntry := <-logEntries
 				loggedMessages = append(loggedMessages, logEntry)
 			}
-			assert.Subset(t, testCase.expectedLogEntries, loggedMessages)
+			assert.Subset(t, loggedMessages, testCase.expectedLogEntries)
 		})
 	}
 }
 
+func TestReuseListener(t *testing.T) {
+	t.Run("good to reuse", func(t *testing.T) {
+		top := &localconfig.TopLevel{General: localconfig.General{TLS: localconfig.TLS{Enabled: true}}}
+		require.True(t, reuseListener(top))
+	})
+
+	t.Run("reuse tls disabled", func(t *testing.T) {
+		top := &localconfig.TopLevel{}
+		require.PanicsWithValue(
+			t,
+			"TLS is required for running ordering nodes of cluster type.",
+			func() { reuseListener(top) },
+		)
+	})
+
+	t.Run("good not to reuse", func(t *testing.T) {
+		top := &localconfig.TopLevel{
+			General: localconfig.General{
+				Cluster: localconfig.Cluster{
+					ListenAddress:     "127.0.0.1",
+					ListenPort:        5000,
+					ServerPrivateKey:  "key",
+					ServerCertificate: "bad",
+				},
+			},
+		}
+		require.False(t, reuseListener(top))
+	})
+
+	t.Run("partial config", func(t *testing.T) {
+		top := &localconfig.TopLevel{
+			General: localconfig.General{
+				Cluster: localconfig.Cluster{
+					ListenAddress:     "127.0.0.1",
+					ListenPort:        5000,
+					ServerCertificate: "bad",
+				},
+			},
+		}
+		require.PanicsWithValue(
+			t,
+			"Options: General.Cluster.ListenPort, General.Cluster.ListenAddress,"+
+				" General.Cluster.ServerCertificate, General.Cluster.ServerPrivateKey, should be defined altogether.",
+			func() { reuseListener(top) },
+		)
+	})
+}
+
 func TestInitializeEtcdraftConsenter(t *testing.T) {
 	consenters := make(map[string]consensus.Consenter)
-	rlf := ramledger.New(10)
 
-	conf := configtxgentest.Load(genesisconfig.SampleInsecureSoloProfile)
+	tmpdir, err := ioutil.TempDir("", "main_test-")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpdir)
+	rlf, err := fileledger.New(tmpdir, &disabled.Provider{})
+	require.NoError(t, err)
+
+	conf := genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile, configtest.GetDevConfigDir())
 	genesisBlock := encoder.New(conf).GenesisBlock()
 
 	ca, _ := tlsgen.NewCA()
@@ -678,32 +878,40 @@ func TestInitializeEtcdraftConsenter(t *testing.T) {
 	srv, err := comm.NewGRPCServer("127.0.0.1:0", comm.ServerConfig{})
 	assert.NoError(t, err)
 
-	initializeEtcdraftConsenter(consenters,
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
+	initializeEtcdraftConsenter(
+		consenters,
 		&localconfig.TopLevel{},
 		rlf,
 		&cluster.PredicateDialer{},
-		genesisBlock, &replicationInitiator{},
+		genesisBlock,
+		onboarding.NewReplicationInitiator(rlf, genesisBlock, nil, comm.SecureOptions{}, nil, cryptoProvider),
 		comm.ServerConfig{
-			SecOpts: &comm.SecureOptions{
+			SecOpts: comm.SecureOptions{
 				Certificate: crt.Cert,
 				Key:         crt.Key,
 				UseTLS:      true,
 			},
-		}, srv, &multichannel.Registrar{}, &disabled.Provider{})
+		},
+		srv,
+		&multichannel.Registrar{},
+		&disabled.Provider{},
+		cryptoProvider,
+	)
 	assert.NotNil(t, consenters["etcdraft"])
 }
 
-func genesisConfig(t *testing.T) *localconfig.TopLevel {
+func genesisConfig(t *testing.T, genesisFile string) *localconfig.TopLevel {
 	t.Helper()
-	localMSPDir, _ := configtest.GetDevMspDir()
+	localMSPDir := configtest.GetDevMspDir()
 	return &localconfig.TopLevel{
 		General: localconfig.General{
-			LedgerType:     "ram",
-			GenesisMethod:  "provisional",
-			GenesisProfile: "SampleDevModeSolo",
-			SystemChannel:  genesisconfig.TestChainID,
-			LocalMSPDir:    localMSPDir,
-			LocalMSPID:     "SampleOrg",
+			BootstrapMethod: "file",
+			BootstrapFile:   genesisFile,
+			LocalMSPDir:     localMSPDir,
+			LocalMSPID:      "SampleOrg",
 			BCCSP: &factory.FactoryOpts{
 				ProviderName: "SW",
 				SwOpts: &factory.SwOpts{
@@ -732,29 +940,13 @@ func panicMsg(f func()) string {
 
 }
 
-func TestCreateReplicator(t *testing.T) {
-	cleanup := configtest.SetDevFabricConfigPath(t)
-	defer cleanup()
-	bootBlock := encoder.New(genesisconfig.Load(genesisconfig.SampleDevModeSoloProfile)).GenesisBlockForChannel("system")
-
-	iterator := &deliver_mocks.BlockIterator{}
-	iterator.NextReturnsOnCall(0, bootBlock, common.Status_SUCCESS)
-	iterator.NextReturnsOnCall(1, bootBlock, common.Status_SUCCESS)
-
-	ledger := &ledger_mocks.ReadWriter{}
-	ledger.On("Height").Return(uint64(1))
-	ledger.On("Iterator", mock.Anything).Return(iterator, uint64(1))
-
-	ledgerFactory := &server_mocks.Factory{}
-	ledgerFactory.On("GetOrCreate", "mychannel").Return(ledger, nil)
-	ledgerFactory.On("ChainIDs").Return([]string{"mychannel"})
-
-	signer := &crypto.LocalSigner{}
-	r := createReplicator(ledgerFactory, bootBlock, &localconfig.TopLevel{}, &comm.SecureOptions{}, signer)
-
-	err := r.verifierRetriever.RetrieveVerifier("mychannel").VerifyBlockSignature(nil, nil)
-	assert.EqualError(t, err, "implicit policy evaluation failed - 0 sub-policies were satisfied, but this policy requires 1 of the 'Writers' sub-policies to be satisfied")
-
-	err = r.verifierRetriever.RetrieveVerifier("system").VerifyBlockSignature(nil, nil)
-	assert.NoError(t, err)
+func produceGenesisFile(t *testing.T, profile, channelID string) string {
+	conf := genesisconfig.Load(profile, configtest.GetDevConfigDir())
+	f, err := ioutil.TempFile("", fmt.Sprintf("%s-genesis_block-", t.Name()))
+	require.NoError(t, err)
+	_, err = f.Write(protoutil.MarshalOrPanic(encoder.New(conf).GenesisBlockForChannel(channelID)))
+	require.NoError(t, err)
+	err = f.Close()
+	require.NoError(t, err)
+	return f.Name()
 }

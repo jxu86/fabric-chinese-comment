@@ -12,9 +12,9 @@ import (
 	"math"
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/ledger/queryresult"
 	"github.com/hyperledger/fabric/core/chaincode"
 	"github.com/hyperledger/fabric/core/chaincode/mock"
-	"github.com/hyperledger/fabric/protos/ledger/queryresult"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -27,7 +27,7 @@ func TestBuildQueryResponse(t *testing.T) {
 		Value:     []byte("value"),
 	}
 
-	// test various boundry cases around maxResultLimit
+	// test various boundary cases around maxResultLimit
 	const maxResultLimit = 10
 	testCases := []struct {
 		recordCount          int

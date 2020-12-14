@@ -9,30 +9,39 @@ package msgprocessor
 import (
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
+	"github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/hyperledger/fabric/common/channelconfig"
-	mockconfig "github.com/hyperledger/fabric/common/mocks/config"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/configtxgentest"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/common/tools/configtxlator/update"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/orderer/etcdraft"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/core/config/configtest"
+	"github.com/hyperledger/fabric/internal/configtxgen/encoder"
+	"github.com/hyperledger/fabric/internal/configtxgen/genesisconfig"
+	"github.com/hyperledger/fabric/internal/configtxlator/update"
+	"github.com/hyperledger/fabric/orderer/common/msgprocessor/mocks"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+func newMockOrdererConfig(migration bool, state orderer.ConsensusType_State) *mocks.OrdererConfig {
+	mockOrderer := &mocks.OrdererConfig{}
+	mockCapabilities := &mocks.OrdererCapabilities{}
+	mockCapabilities.ConsensusTypeMigrationReturns(migration)
+	mockOrderer.CapabilitiesReturns(mockCapabilities)
+	mockOrderer.ConsensusTypeReturns("kafka")
+	mockOrderer.ConsensusStateReturns(state)
+	return mockOrderer
+}
+
 func TestMaintenanceNoConfig(t *testing.T) {
 	ms := &mockSystemChannelFilterSupport{
-		OrdererConfigVal: &mockconfig.Orderer{
-			CapabilitiesVal:       &mockconfig.OrdererCapabilities{ConsensusTypeMigrationVal: true},
-			ConsensusTypeVal:      "solo",
-			ConsensusTypeStateVal: orderer.ConsensusType_STATE_NORMAL,
-		},
+		OrdererConfigVal: &mocks.OrdererConfig{},
 	}
-	mf := NewMaintenanceFilter(ms)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	mf := NewMaintenanceFilter(ms, cryptoProvider)
 	require.NotNil(t, mf)
 	ms.OrdererConfigVal = nil
 	assert.Panics(t, func() { _ = mf.Apply(&common.Envelope{}) }, "No orderer config")
@@ -40,13 +49,11 @@ func TestMaintenanceNoConfig(t *testing.T) {
 
 func TestMaintenanceDisabled(t *testing.T) {
 	msInactive := &mockSystemChannelFilterSupport{
-		OrdererConfigVal: &mockconfig.Orderer{
-			CapabilitiesVal:       &mockconfig.OrdererCapabilities{ConsensusTypeMigrationVal: false},
-			ConsensusTypeVal:      "kafka",
-			ConsensusTypeStateVal: orderer.ConsensusType_STATE_NORMAL,
-		},
+		OrdererConfigVal: newMockOrdererConfig(false, orderer.ConsensusType_STATE_NORMAL),
 	}
-	mf := NewMaintenanceFilter(msInactive)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	mf := NewMaintenanceFilter(msInactive, cryptoProvider)
 	require.NotNil(t, mf)
 	current := consensusTypeInfo{ordererType: "kafka", metadata: []byte{}, state: orderer.ConsensusType_STATE_NORMAL}
 
@@ -73,15 +80,13 @@ func TestMaintenanceDisabled(t *testing.T) {
 	})
 }
 
-func TestMaintenanceParseEvelope(t *testing.T) {
+func TestMaintenanceParseEnvelope(t *testing.T) {
 	msActive := &mockSystemChannelFilterSupport{
-		OrdererConfigVal: &mockconfig.Orderer{
-			CapabilitiesVal:       &mockconfig.OrdererCapabilities{ConsensusTypeMigrationVal: true},
-			ConsensusTypeVal:      "kafka",
-			ConsensusTypeStateVal: orderer.ConsensusType_STATE_NORMAL,
-		},
+		OrdererConfigVal: newMockOrdererConfig(true, orderer.ConsensusType_STATE_NORMAL),
 	}
-	mf := NewMaintenanceFilter(msActive)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	mf := NewMaintenanceFilter(msActive, cryptoProvider)
 	require.NotNil(t, mf)
 	badBytes := []byte{1, 2, 3, 4}
 
@@ -105,7 +110,7 @@ func TestMaintenanceParseEvelope(t *testing.T) {
 		{
 			name: "Bad ChannelHeader",
 			envelope: &common.Envelope{
-				Payload: utils.MarshalOrPanic(&common.Payload{
+				Payload: protoutil.MarshalOrPanic(&common.Payload{
 					Header: &common.Header{
 						ChannelHeader: badBytes,
 					},
@@ -116,9 +121,9 @@ func TestMaintenanceParseEvelope(t *testing.T) {
 		{
 			name: "Bad ChannelHeader Type",
 			envelope: &common.Envelope{
-				Payload: utils.MarshalOrPanic(&common.Payload{
+				Payload: protoutil.MarshalOrPanic(&common.Payload{
 					Header: &common.Header{
-						ChannelHeader: utils.MarshalOrPanic(&common.ChannelHeader{
+						ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
 							ChannelId: "testChain",
 							Type:      int32(common.HeaderType_ORDERER_TRANSACTION), // Expect CONFIG
 						}),
@@ -130,9 +135,9 @@ func TestMaintenanceParseEvelope(t *testing.T) {
 		{
 			name: "Bad Data",
 			envelope: &common.Envelope{
-				Payload: utils.MarshalOrPanic(&common.Payload{
+				Payload: protoutil.MarshalOrPanic(&common.Payload{
 					Header: &common.Header{
-						ChannelHeader: utils.MarshalOrPanic(&common.ChannelHeader{
+						ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
 							ChannelId: "testChain",
 							Type:      int32(common.HeaderType_CONFIG),
 						}),
@@ -155,13 +160,11 @@ func TestMaintenanceParseEvelope(t *testing.T) {
 
 func TestMaintenanceInspectEntry(t *testing.T) {
 	msActive := &mockSystemChannelFilterSupport{
-		OrdererConfigVal: &mockconfig.Orderer{
-			CapabilitiesVal:       &mockconfig.OrdererCapabilities{ConsensusTypeMigrationVal: true},
-			ConsensusTypeVal:      "kafka",
-			ConsensusTypeStateVal: orderer.ConsensusType_STATE_NORMAL,
-		},
+		OrdererConfigVal: newMockOrdererConfig(true, orderer.ConsensusType_STATE_NORMAL),
 	}
-	mf := NewMaintenanceFilter(msActive)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	mf := NewMaintenanceFilter(msActive, cryptoProvider)
 	require.NotNil(t, mf)
 	bogusMetadata := []byte{1, 2, 3, 4}
 	current := consensusTypeInfo{ordererType: "kafka", metadata: []byte{}, state: orderer.ConsensusType_STATE_NORMAL}
@@ -192,16 +195,14 @@ func TestMaintenanceInspectEntry(t *testing.T) {
 
 func TestMaintenanceInspectChange(t *testing.T) {
 	msActive := &mockSystemChannelFilterSupport{
-		OrdererConfigVal: &mockconfig.Orderer{
-			CapabilitiesVal:       &mockconfig.OrdererCapabilities{ConsensusTypeMigrationVal: true},
-			ConsensusTypeVal:      "kafka",
-			ConsensusTypeStateVal: orderer.ConsensusType_STATE_MAINTENANCE,
-		},
+		OrdererConfigVal: newMockOrdererConfig(true, orderer.ConsensusType_STATE_MAINTENANCE),
 	}
-	mf := NewMaintenanceFilter(msActive)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	mf := NewMaintenanceFilter(msActive, cryptoProvider)
 	require.NotNil(t, mf)
 	bogusMetadata := []byte{1, 2, 3, 4}
-	validMetadata := utils.MarshalOrPanic(&etcdraft.ConfigMetadata{})
+	validMetadata := protoutil.MarshalOrPanic(&etcdraft.ConfigMetadata{})
 	current := consensusTypeInfo{ordererType: "kafka", metadata: []byte{}, state: orderer.ConsensusType_STATE_MAINTENANCE}
 
 	t.Run("Good type change", func(t *testing.T) {
@@ -245,16 +246,17 @@ func TestMaintenanceInspectChange(t *testing.T) {
 }
 
 func TestMaintenanceInspectExit(t *testing.T) {
-	validMetadata := utils.MarshalOrPanic(&etcdraft.ConfigMetadata{})
+	validMetadata := protoutil.MarshalOrPanic(&etcdraft.ConfigMetadata{})
+	mockOrderer := newMockOrdererConfig(true, orderer.ConsensusType_STATE_MAINTENANCE)
+	mockOrderer.ConsensusTypeReturns("etcdraft")
+	mockOrderer.ConsensusMetadataReturns(validMetadata)
+
 	msActive := &mockSystemChannelFilterSupport{
-		OrdererConfigVal: &mockconfig.Orderer{
-			CapabilitiesVal:       &mockconfig.OrdererCapabilities{ConsensusTypeMigrationVal: true},
-			ConsensusTypeVal:      "etcdraft",
-			ConsensusTypeStateVal: orderer.ConsensusType_STATE_MAINTENANCE,
-			ConsensusMetadataVal:  validMetadata,
-		},
+		OrdererConfigVal: mockOrderer,
 	}
-	mf := NewMaintenanceFilter(msActive)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	mf := NewMaintenanceFilter(msActive, cryptoProvider)
 	require.NotNil(t, mf)
 	current := consensusTypeInfo{ordererType: "etcdraft", metadata: validMetadata, state: orderer.ConsensusType_STATE_MAINTENANCE}
 
@@ -297,16 +299,14 @@ func TestMaintenanceInspectExit(t *testing.T) {
 
 func TestMaintenanceExtra(t *testing.T) {
 	msActive := &mockSystemChannelFilterSupport{
-		OrdererConfigVal: &mockconfig.Orderer{
-			CapabilitiesVal:       &mockconfig.OrdererCapabilities{ConsensusTypeMigrationVal: true},
-			ConsensusTypeVal:      "kafka",
-			ConsensusTypeStateVal: orderer.ConsensusType_STATE_MAINTENANCE,
-		},
+		OrdererConfigVal: newMockOrdererConfig(true, orderer.ConsensusType_STATE_MAINTENANCE),
 	}
-	mf := NewMaintenanceFilter(msActive)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	mf := NewMaintenanceFilter(msActive, cryptoProvider)
 	require.NotNil(t, mf)
 	current := consensusTypeInfo{ordererType: "kafka", metadata: nil, state: orderer.ConsensusType_STATE_MAINTENANCE}
-	validMetadata := utils.MarshalOrPanic(&etcdraft.ConfigMetadata{})
+	validMetadata := protoutil.MarshalOrPanic(&etcdraft.ConfigMetadata{})
 
 	t.Run("Good: with extra group", func(t *testing.T) {
 		next := consensusTypeInfo{ordererType: "etcdraft", metadata: validMetadata, state: orderer.ConsensusType_STATE_MAINTENANCE}
@@ -332,13 +332,11 @@ func TestMaintenanceExtra(t *testing.T) {
 
 func TestMaintenanceMissingConsensusType(t *testing.T) {
 	msActive := &mockSystemChannelFilterSupport{
-		OrdererConfigVal: &mockconfig.Orderer{
-			CapabilitiesVal:       &mockconfig.OrdererCapabilities{ConsensusTypeMigrationVal: true},
-			ConsensusTypeVal:      "kafka",
-			ConsensusTypeStateVal: orderer.ConsensusType_STATE_MAINTENANCE,
-		},
+		OrdererConfigVal: newMockOrdererConfig(true, orderer.ConsensusType_STATE_MAINTENANCE),
 	}
-	mf := NewMaintenanceFilter(msActive)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	mf := NewMaintenanceFilter(msActive, cryptoProvider)
 	require.NotNil(t, mf)
 	current := consensusTypeInfo{ordererType: "kafka", metadata: nil, state: orderer.ConsensusType_STATE_MAINTENANCE}
 	for i := 1; i < 4; i++ {
@@ -359,7 +357,7 @@ func makeConfigEnvelope(t *testing.T, current, next consensusTypeInfo) *common.E
 	updated := makeBaseConfig(t)
 
 	original.ChannelGroup.Groups[channelconfig.OrdererGroupKey].Values[channelconfig.ConsensusTypeKey] = &common.ConfigValue{
-		Value: utils.MarshalOrPanic(
+		Value: protoutil.MarshalOrPanic(
 			&orderer.ConsensusType{
 				Type:     current.ordererType,
 				Metadata: current.metadata,
@@ -369,7 +367,7 @@ func makeConfigEnvelope(t *testing.T, current, next consensusTypeInfo) *common.E
 	}
 
 	updated.ChannelGroup.Groups[channelconfig.OrdererGroupKey].Values[channelconfig.ConsensusTypeKey] = &common.ConfigValue{
-		Value: utils.MarshalOrPanic(
+		Value: protoutil.MarshalOrPanic(
 			&orderer.ConsensusType{
 				Type:     next.ordererType,
 				Metadata: next.metadata,
@@ -388,7 +386,7 @@ func makeConfigEnvelopeWithExtraStuff(t *testing.T, current, next consensusTypeI
 	updated := makeBaseConfig(t)
 
 	original.ChannelGroup.Groups[channelconfig.OrdererGroupKey].Values[channelconfig.ConsensusTypeKey] = &common.ConfigValue{
-		Value: utils.MarshalOrPanic(
+		Value: protoutil.MarshalOrPanic(
 			&orderer.ConsensusType{
 				Type:     current.ordererType,
 				Metadata: current.metadata,
@@ -398,7 +396,7 @@ func makeConfigEnvelopeWithExtraStuff(t *testing.T, current, next consensusTypeI
 	}
 
 	updated.ChannelGroup.Groups[channelconfig.OrdererGroupKey].Values[channelconfig.ConsensusTypeKey] = &common.ConfigValue{
-		Value: utils.MarshalOrPanic(
+		Value: protoutil.MarshalOrPanic(
 			&orderer.ConsensusType{
 				Type:     next.ordererType,
 				Metadata: next.metadata,
@@ -412,13 +410,13 @@ func makeConfigEnvelopeWithExtraStuff(t *testing.T, current, next consensusTypeI
 		updated.ChannelGroup.Groups[channelconfig.ConsortiumsGroupKey] = &common.ConfigGroup{}
 	case 2:
 		updated.ChannelGroup.Values[channelconfig.ConsortiumKey] = &common.ConfigValue{
-			Value:     utils.MarshalOrPanic(&common.Consortium{}),
+			Value:     protoutil.MarshalOrPanic(&common.Consortium{}),
 			ModPolicy: channelconfig.AdminsPolicyKey,
 			Version:   1,
 		}
 	case 3:
 		updated.ChannelGroup.Groups[channelconfig.OrdererGroupKey].Values[channelconfig.BatchSizeKey] = &common.ConfigValue{
-			Value: utils.MarshalOrPanic(
+			Value: protoutil.MarshalOrPanic(
 				&orderer.BatchSize{
 					AbsoluteMaxBytes:  10241024,
 					MaxMessageCount:   1024,
@@ -439,11 +437,11 @@ func makeConfigTx(original, updated *common.Config, t *testing.T) *common.Envelo
 	configUpdate, err := update.Compute(original, updated)
 	require.NoError(t, err)
 	configUpdateEnv := &common.ConfigUpdateEnvelope{
-		ConfigUpdate: utils.MarshalOrPanic(configUpdate),
+		ConfigUpdate: protoutil.MarshalOrPanic(configUpdate),
 	}
-	configUpdateTx, err := utils.CreateSignedEnvelope(common.HeaderType_CONFIG_UPDATE, testChannelID, mockCrypto(), configUpdateEnv, 0, 0)
+	configUpdateTx, err := protoutil.CreateSignedEnvelope(common.HeaderType_CONFIG_UPDATE, testChannelID, mockCrypto(), configUpdateEnv, 0, 0)
 	require.NoError(t, err)
-	configTx, err := utils.CreateSignedEnvelope(
+	configTx, err := protoutil.CreateSignedEnvelope(
 		common.HeaderType_CONFIG,
 		testChannelID,
 		mockCrypto(),
@@ -458,7 +456,7 @@ func makeConfigTx(original, updated *common.Config, t *testing.T) *common.Envelo
 }
 
 func makeBaseConfig(t *testing.T) *common.Config {
-	gConf := configtxgentest.Load(localconfig.SampleInsecureSoloProfile)
+	gConf := genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile, configtest.GetDevConfigDir())
 	gConf.Orderer.Capabilities = map[string]bool{
 		capabilities.OrdererV1_4_2: true,
 	}

@@ -9,8 +9,8 @@ package capabilities
 import (
 	"testing"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/msp"
-	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -70,11 +70,41 @@ func TestChannelV142(t *testing.T) {
 	assert.True(t, cp.OrgSpecificOrdererEndpoints())
 }
 
-func TestChannelNotSuported(t *testing.T) {
+func TestChannelV143(t *testing.T) {
 	cp := NewChannelProvider(map[string]*cb.Capability{
-		ChannelV1_1:          {},
-		ChannelV1_3:          {},
-		"Bogus_Not_suported": {},
+		ChannelV1_3:   {},
+		ChannelV1_4_2: {},
+		ChannelV1_4_3: {},
 	})
-	assert.EqualError(t, cp.Supported(), "Channel capability Bogus_Not_suported is required but not supported")
+	assert.NoError(t, cp.Supported())
+	assert.True(t, cp.MSPVersion() == msp.MSPv1_4_3)
+	assert.True(t, cp.ConsensusTypeMigration())
+	assert.True(t, cp.OrgSpecificOrdererEndpoints())
+
+	cp = NewChannelProvider(map[string]*cb.Capability{
+		ChannelV1_4_3: {},
+	})
+	assert.NoError(t, cp.Supported())
+	assert.True(t, cp.MSPVersion() == msp.MSPv1_4_3)
+	assert.True(t, cp.ConsensusTypeMigration())
+	assert.True(t, cp.OrgSpecificOrdererEndpoints())
+}
+
+func TestChannelV20(t *testing.T) {
+	cp := NewChannelProvider(map[string]*cb.Capability{
+		ChannelV2_0: {},
+	})
+	assert.NoError(t, cp.Supported())
+	assert.True(t, cp.MSPVersion() == msp.MSPv1_4_3)
+	assert.True(t, cp.ConsensusTypeMigration())
+	assert.True(t, cp.OrgSpecificOrdererEndpoints())
+}
+
+func TestChannelNotSupported(t *testing.T) {
+	cp := NewChannelProvider(map[string]*cb.Capability{
+		ChannelV1_1:           {},
+		ChannelV1_3:           {},
+		"Bogus_Not_Supported": {},
+	})
+	assert.EqualError(t, cp.Supported(), "Channel capability Bogus_Not_Supported is required but not supported")
 }

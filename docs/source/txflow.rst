@@ -16,7 +16,7 @@ received back necessary cryptographic material, which is used to authenticate to
 the network.
 
 The chaincode (containing a set of key value pairs representing the initial
-state of the radish market) is installed on the peers and instantiated on the
+state of the radish market) is installed on the peers and deployed to the
 channel. The chaincode contains logic defining a set of transaction instructions
 and the agreed upon price for a radish. An endorsement policy has also been set
 for this chaincode, stating that both ``peerA`` and ``peerB`` must endorse any
@@ -73,7 +73,7 @@ payload for the application to consume.
 
 The application verifies the endorsing peer signatures and compares the proposal
 responses to determine if the proposal responses are the same. If the chaincode
-is only queried the ledger, the application would inspect the query response and
+is only querying the ledger, the application would only inspect the query response and
 would typically not submit the transaction to the ordering service. If the client
 application intends to submit the transaction to the ordering service to update the
 ledger, the application determines if the specified endorsement policy has been
@@ -111,8 +111,8 @@ Transactions in the block are tagged as being valid or invalid.
 
 Each peer appends the block to the channel’s chain, and for each valid
 transaction the write sets are committed to current state database. An event is
-emitted, to notify the client application that the transaction (invocation) has
-been immutably appended to the chain, as well as notification of whether the
+emitted by each peer to notify the client application that the transaction (invocation)
+has been immutably appended to the chain, as well as notification of whether the
 transaction was validated or invalidated.
 
 .. note:: Applications should listen for the transaction event after submitting
@@ -122,8 +122,10 @@ transaction was validated or invalidated.
           whether your transaction has actually been ordered, validated, and
           committed to the ledger.
 
-See the :ref:`sequence diagram <swimlane>` to better understand the
-transaction flow.
+You can also use the swimlane sequence diagram below to examine the
+transaction flow in more detail.
+
+.. image:: images/flow-4.png
 
 .. Licensed under Creative Commons Attribution 4.0 International License
-https://creativecommons.org/licenses/by/4.0/
+   https://creativecommons.org/licenses/by/4.0/

@@ -6,14 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 
 package kvledger
 
-import (
-	"os"
+import "github.com/hyperledger/fabric/internal/fileutil"
 
-	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
-	"github.com/pkg/errors"
-)
-
-func dropDBs() error {
+func dropDBs(rootFSPath string) error {
 	// During block commits to stateDB, the transaction manager updates the bookkeeperDB and one of the
 	// state listener updates the config historyDB. As we drop the stateDB, we need to drop the
 	// configHistoryDB and bookkeeperDB too so that during the peer startup after the reset/rollback,
@@ -23,46 +18,41 @@ func dropDBs() error {
 	// command fails before dropping the stateDB, peer cannot start with consistent data (if the
 	// user decides to start the peer without retrying the reset/rollback) as the stateDB would
 	// not be rebuilt.
-	if err := dropStateLevelDB(); err != nil {
+	if err := dropStateLevelDB(rootFSPath); err != nil {
 		return err
 	}
-	if err := dropConfigHistoryDB(); err != nil {
+	if err := dropConfigHistoryDB(rootFSPath); err != nil {
 		return err
 	}
-	if err := dropBookkeeperDB(); err != nil {
+	if err := dropBookkeeperDB(rootFSPath); err != nil {
 		return err
 	}
-	if err := dropHistoryDB(); err != nil {
+	if err := dropHistoryDB(rootFSPath); err != nil {
 		return err
 	}
 	return nil
 }
 
-func dropStateLevelDB() error {
-	stateLeveldbPath := ledgerconfig.GetStateLevelDBPath()
-	logger.Infof("Dropping StateLevelDB at location [%s]", stateLeveldbPath)
-	err := os.RemoveAll(stateLeveldbPath)
-	return errors.Wrapf(err, "error removing the StateLevelDB located at %s", stateLeveldbPath)
+func dropStateLevelDB(rootFSPath string) error {
+	stateLeveldbPath := StateDBPath(rootFSPath)
+	logger.Infof("Dropping all contents in StateLevelDB at location [%s] ...if present", stateLeveldbPath)
+	return fileutil.RemoveContents(stateLeveldbPath)
 }
 
-func dropConfigHistoryDB() error {
-	configHistoryDBPath := ledgerconfig.GetConfigHistoryPath()
-	logger.Infof("Dropping ConfigHistoryDB at location [%s]", configHistoryDBPath)
-	err := os.RemoveAll(configHistoryDBPath)
-	return errors.Wrapf(err, "error removing the ConfigHistoryDB located at %s", configHistoryDBPath)
-
+func dropConfigHistoryDB(rootFSPath string) error {
+	configHistoryDBPath := ConfigHistoryDBPath(rootFSPath)
+	logger.Infof("Dropping all contents in ConfigHistoryDB at location [%s] ...if present", configHistoryDBPath)
+	return fileutil.RemoveContents(configHistoryDBPath)
 }
 
-func dropBookkeeperDB() error {
-	bookkeeperDBPath := ledgerconfig.GetInternalBookkeeperPath()
-	logger.Infof("Dropping BookkeeperDB at location [%s]", bookkeeperDBPath)
-	err := os.RemoveAll(bookkeeperDBPath)
-	return errors.Wrapf(err, "error removing the BookkeeperDB located at %s", bookkeeperDBPath)
+func dropBookkeeperDB(rootFSPath string) error {
+	bookkeeperDBPath := BookkeeperDBPath(rootFSPath)
+	logger.Infof("Dropping all contents in BookkeeperDB at location [%s] ...if present", bookkeeperDBPath)
+	return fileutil.RemoveContents(bookkeeperDBPath)
 }
 
-func dropHistoryDB() error {
-	histroryDBPath := ledgerconfig.GetHistoryLevelDBPath()
-	logger.Infof("Dropping HistoryDB at location [%s]", histroryDBPath)
-	err := os.RemoveAll(histroryDBPath)
-	return errors.Wrapf(err, "error removing the HistoryDB located at %s", histroryDBPath)
+func dropHistoryDB(rootFSPath string) error {
+	historyDBPath := HistoryDBPath(rootFSPath)
+	logger.Infof("Dropping all contents under in HistoryDB at location [%s] ...if present", historyDBPath)
+	return fileutil.RemoveContents(historyDBPath)
 }

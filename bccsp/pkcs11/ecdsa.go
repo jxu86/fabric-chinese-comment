@@ -20,7 +20,7 @@ func (csp *impl) signECDSA(k ecdsaPrivateKey, digest []byte, opts bccsp.SignerOp
 		return nil, err
 	}
 
-	s, _, err = utils.ToLowS(k.pub.pub, s)
+	s, err = utils.ToLowS(k.pub.pub, s)
 	if err != nil {
 		return nil, err
 	}
@@ -46,6 +46,6 @@ func (csp *impl) verifyECDSA(k ecdsaPublicKey, signature, digest []byte, opts bc
 	if csp.softVerify {
 		return ecdsa.Verify(k.pub, digest, r, s), nil
 	}
-	return csp.verifyP11ECDSA(k.ski, digest, r, s, k.pub.Curve.Params().BitSize/8)
 
+	return csp.verifyP11ECDSA(k.ski, digest, r, s, k.pub.Curve.Params().BitSize/8)
 }

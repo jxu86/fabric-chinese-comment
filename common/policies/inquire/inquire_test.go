@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/cauthdsl"
-	"github.com/hyperledger/fabric/protos/msp"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric-protos-go/msp"
+	"github.com/hyperledger/fabric/common/policydsl"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -29,7 +29,7 @@ func createPrincipals(orgNames ...string) []*msp.MSPPrincipal {
 	appendPrincipal := func(orgName string) {
 		principals = append(principals, &msp.MSPPrincipal{
 			PrincipalClassification: msp.MSPPrincipal_ROLE,
-			Principal:               utils.MarshalOrPanic(&msp.MSPRole{Role: msp.MSPRole_MEMBER, MspIdentifier: orgName})})
+			Principal:               protoutil.MarshalOrPanic(&msp.MSPRole{Role: msp.MSPRole_MEMBER, MspIdentifier: orgName})})
 	}
 	for _, org := range orgNames {
 		appendPrincipal(org)
@@ -86,7 +86,7 @@ func mspId(principal *msp.MSPPrincipal) string {
 func TestSatisfiedBy(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			p, err := cauthdsl.FromString(test.policy)
+			p, err := policydsl.FromString(test.policy)
 			assert.NoError(t, err)
 
 			ip := NewInquireableSignaturePolicy(p)
@@ -111,7 +111,7 @@ func TestSatisfiedByTooManyCombinations(t *testing.T) {
 	// and we ensure we don't return so many combinations,
 	// but limit it to combinationsUpperBound.
 
-	p, err := cauthdsl.FromString("OutOf(15, 'A.member', 'B.member', 'C.member', 'D.member', 'E.member', 'F.member'," +
+	p, err := policydsl.FromString("OutOf(15, 'A.member', 'B.member', 'C.member', 'D.member', 'E.member', 'F.member'," +
 		" 'G.member', 'H.member', 'I.member', 'J.member', 'K.member', 'L.member', 'M.member', 'N.member', 'O.member', " +
 		"'P.member', 'Q.member', 'R.member', 'S.member', 'T.member', 'U.member', 'V.member', 'W.member', 'X.member', " +
 		"'Y.member', 'Z.member')")

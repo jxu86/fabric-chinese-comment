@@ -63,8 +63,8 @@ type identityMapperImpl struct {
 	sa         api.SecurityAdvisor
 	pkiID2Cert map[string]*storedIdentity
 	sync.RWMutex
-	stopChan chan struct{}
-	sync.Once
+	stopChan  chan struct{}
+	once      sync.Once
 	selfPKIID string
 }
 
@@ -138,7 +138,7 @@ func (is *identityMapperImpl) Put(pkiID common.PKIidType, identity api.PeerIdent
 			return errors.New("identity expired")
 		}
 		// Identity would be wiped out a millisecond after its expiration date
-		timeToLive := expirationDate.Add(time.Millisecond).Sub(time.Now())
+		timeToLive := time.Until(expirationDate.Add(time.Millisecond))
 		expirationTimer = time.AfterFunc(timeToLive, func() {
 			is.delete(pkiID, identity)
 		})
@@ -167,8 +167,8 @@ func (is *identityMapperImpl) Sign(msg []byte) ([]byte, error) {
 }
 
 func (is *identityMapperImpl) Stop() {
-	is.Once.Do(func() {
-		is.stopChan <- struct{}{}
+	is.once.Do(func() {
+		close(is.stopChan)
 	})
 }
 

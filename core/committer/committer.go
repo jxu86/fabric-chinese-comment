@@ -17,8 +17,8 @@ limitations under the License.
 package committer
 
 import (
+	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/protos/common"
 )
 
 // Committer is the interface supported by committers
@@ -30,23 +30,19 @@ import (
 // change
 type Committer interface {
 
-	// CommitWithPvtData block and private data into the ledger
-	// 提交区块与私隐数据对象到账本
-	CommitWithPvtData(blockAndPvtData *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error
+	// CommitLegacy block and private data into the ledger
+	CommitLegacy(blockAndPvtData *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error
 
 	// GetPvtDataAndBlockByNum retrieves block with private data with given
 	// sequence number
-	// 获取指定的区域与私隐数据对象
 	GetPvtDataAndBlockByNum(seqNum uint64) (*ledger.BlockAndPvtData, error)
 
 	// GetPvtDataByNum returns a slice of the private data from the ledger
 	// for given block and based on the filter which indicates a map of
 	// collections and namespaces of private data to retrieve
-	// 获取指定区块号的私隐数据列表，并过滤指定的私隐数据
 	GetPvtDataByNum(blockNum uint64, filter ledger.PvtNsCollFilter) ([]*ledger.TxPvtData, error)
 
 	// Get recent block sequence number
-	// 获取账本高度
 	LedgerHeight() (uint64, error)
 
 	// DoesPvtDataInfoExistInLedger returns true if the ledger has pvtdata info
@@ -54,7 +50,6 @@ type Committer interface {
 	DoesPvtDataInfoExistInLedger(blockNum uint64) (bool, error)
 
 	// Gets blocks with sequence numbers provided in the slice
-	// 根据区块号列表获取对应的区块列表
 	GetBlocks(blockSeqs []uint64) []*common.Block
 
 	// GetConfigHistoryRetriever returns the ConfigHistoryRetriever
@@ -64,7 +59,7 @@ type Committer interface {
 	// If hashes for some of the private data supplied in this function does not match
 	// the corresponding hash present in the block, the unmatched private data is not
 	// committed and instead the mismatch inforation is returned back
-	CommitPvtDataOfOldBlocks(blockPvtData []*ledger.BlockPvtData) ([]*ledger.PvtdataHashMismatch, error)
+	CommitPvtDataOfOldBlocks(reconciledPvtdata []*ledger.ReconciledPvtdata, unreconciled ledger.MissingPvtDataInfo) ([]*ledger.PvtdataHashMismatch, error)
 
 	// GetMissingPvtDataTracker return the MissingPvtDataTracker
 	GetMissingPvtDataTracker() (ledger.MissingPvtDataTracker, error)

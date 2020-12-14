@@ -40,8 +40,9 @@ Flags:
   -h, --help                                help for channel
       --keyfile string                      Path to file containing PEM-encoded private key to use for mutual TLS communication with the orderer endpoint
   -o, --orderer string                      Ordering service endpoint
-      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer.
+      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer
       --tls                                 Use TLS when communicating with the orderer endpoint
+      --tlsHandshakeTimeShift duration      The amount of time to shift backwards for certificate expiration checks during TLS handshakes with the orderer endpoint
 
 Use "peer channel [command] --help" for more information about a command.
 ```
@@ -68,8 +69,9 @@ Global Flags:
       --connTimeout duration                Timeout for client to connect (default 3s)
       --keyfile string                      Path to file containing PEM-encoded private key to use for mutual TLS communication with the orderer endpoint
   -o, --orderer string                      Ordering service endpoint
-      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer.
+      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer
       --tls                                 Use TLS when communicating with the orderer endpoint
+      --tlsHandshakeTimeShift duration      The amount of time to shift backwards for certificate expiration checks during TLS handshakes with the orderer endpoint
 ```
 
 
@@ -92,8 +94,9 @@ Global Flags:
       --connTimeout duration                Timeout for client to connect (default 3s)
       --keyfile string                      Path to file containing PEM-encoded private key to use for mutual TLS communication with the orderer endpoint
   -o, --orderer string                      Ordering service endpoint
-      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer.
+      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer
       --tls                                 Use TLS when communicating with the orderer endpoint
+      --tlsHandshakeTimeShift duration      The amount of time to shift backwards for certificate expiration checks during TLS handshakes with the orderer endpoint
 ```
 
 
@@ -115,8 +118,9 @@ Global Flags:
       --connTimeout duration                Timeout for client to connect (default 3s)
       --keyfile string                      Path to file containing PEM-encoded private key to use for mutual TLS communication with the orderer endpoint
   -o, --orderer string                      Ordering service endpoint
-      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer.
+      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer
       --tls                                 Use TLS when communicating with the orderer endpoint
+      --tlsHandshakeTimeShift duration      The amount of time to shift backwards for certificate expiration checks during TLS handshakes with the orderer endpoint
 ```
 
 
@@ -138,8 +142,9 @@ Global Flags:
       --connTimeout duration                Timeout for client to connect (default 3s)
       --keyfile string                      Path to file containing PEM-encoded private key to use for mutual TLS communication with the orderer endpoint
   -o, --orderer string                      Ordering service endpoint
-      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer.
+      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer
       --tls                                 Use TLS when communicating with the orderer endpoint
+      --tlsHandshakeTimeShift duration      The amount of time to shift backwards for certificate expiration checks during TLS handshakes with the orderer endpoint
 ```
 
 
@@ -160,8 +165,9 @@ Global Flags:
       --connTimeout duration                Timeout for client to connect (default 3s)
       --keyfile string                      Path to file containing PEM-encoded private key to use for mutual TLS communication with the orderer endpoint
   -o, --orderer string                      Ordering service endpoint
-      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer.
+      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer
       --tls                                 Use TLS when communicating with the orderer endpoint
+      --tlsHandshakeTimeShift duration      The amount of time to shift backwards for certificate expiration checks during TLS handshakes with the orderer endpoint
 ```
 
 
@@ -183,8 +189,9 @@ Global Flags:
       --connTimeout duration                Timeout for client to connect (default 3s)
       --keyfile string                      Path to file containing PEM-encoded private key to use for mutual TLS communication with the orderer endpoint
   -o, --orderer string                      Ordering service endpoint
-      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer.
+      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer
       --tls                                 Use TLS when communicating with the orderer endpoint
+      --tlsHandshakeTimeShift duration      The amount of time to shift backwards for certificate expiration checks during TLS handshakes with the orderer endpoint
 ```
 
 
@@ -207,8 +214,9 @@ Global Flags:
       --connTimeout duration                Timeout for client to connect (default 3s)
       --keyfile string                      Path to file containing PEM-encoded private key to use for mutual TLS communication with the orderer endpoint
   -o, --orderer string                      Ordering service endpoint
-      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer.
+      --ordererTLSHostnameOverride string   The hostname override to use when validating the TLS connection to the orderer
       --tls                                 Use TLS when communicating with the orderer endpoint
+      --tlsHandshakeTimeShift duration      The amount of time to shift backwards for certificate expiration checks during TLS handshakes with the orderer endpoint
 ```
 
 ## Example Usage
@@ -219,10 +227,10 @@ Here's an example that uses the `--orderer` global flag on the `peer channel
 create` command.
 
 * Create a sample channel `mychannel` defined by the configuration transaction
-  contained in file `./createchannel.txn`. Use the orderer at `orderer.example.com:7050`.
+  contained in file `./createchannel.tx`. Use the orderer at `orderer.example.com:7050`.
 
   ```
-  peer channel create -c mychannel -f ./createchannel.txn --orderer orderer.example.com:7050
+  peer channel create -c mychannel -f ./createchannel.tx --orderer orderer.example.com:7050
 
   2018-02-25 08:23:57.548 UTC [channelCmd] InitCmdFactory -> INFO 003 Endorser and orderer connections initialized
   2018-02-25 08:23:57.626 UTC [channelCmd] InitCmdFactory -> INFO 019 Endorser and orderer connections initialized
@@ -237,11 +245,11 @@ Here's an example of the `peer channel create` command option.
 
 * Create a new channel `mychannel` for the network, using the orderer at ip
   address `orderer.example.com:7050`.  The configuration update transaction
-  required to create this channel is defined the file `./createchannel.txn`.
+  required to create this channel is defined the file `./createchannel.tx`.
   Wait 30 seconds for the channel to be created.
 
   ```
-    peer channel create -c mychannel --orderer orderer.example.com:7050 -f ./createchannel.txn -t 30s
+    peer channel create -c mychannel --orderer orderer.example.com:7050 -f ./createchannel.tx -t 30s
 
     2018-02-23 06:31:58.568 UTC [channelCmd] InitCmdFactory -> INFO 003 Endorser and orderer connections initialized
     2018-02-23 06:31:58.669 UTC [channelCmd] InitCmdFactory -> INFO 019 Endorser and orderer connections initialized
@@ -373,7 +381,7 @@ Here's an example of the `peer channel join` command.
 Here's an example of the `peer channel signconfigtx` command.
 
 * Sign the `channel update` transaction defined in the file
-  `./updatechannel.txn`. The example lists the configuration transaction file
+  `./updatechannel.tx`. The example lists the configuration transaction file
   before and after the command.
 
   ```
@@ -401,12 +409,12 @@ Here's an example of the `peer channel signconfigtx` command.
 Here's an example of the `peer channel update` command.
 
 * Update the channel `mychannel` using the configuration transaction defined in
-  the file `./updatechannel.txn`. Use the orderer at ip address
+  the file `./updatechannel.tx`. Use the orderer at ip address
   `orderer.example.com:7050` to send the configuration transaction to all peers
   in the channel to update their copy of the channel configuration.
 
   ```
-  peer channel update -c mychannel -f ./updatechannel.txn -o orderer.example.com:7050
+  peer channel update -c mychannel -f ./updatechannel.tx -o orderer.example.com:7050
 
   2018-02-23 06:32:11.569 UTC [channelCmd] InitCmdFactory -> INFO 003 Endorser and orderer connections initialized
   2018-02-23 06:32:11.626 UTC [main] main -> INFO 010 Exiting.....

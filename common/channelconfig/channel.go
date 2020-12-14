@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"math"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/msp"
-	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/pkg/errors"
 )
 
@@ -77,7 +77,7 @@ type ChannelConfig struct {
 }
 
 // NewChannelConfig creates a new ChannelConfig
-func NewChannelConfig(channelGroup *cb.ConfigGroup) (*ChannelConfig, error) {
+func NewChannelConfig(channelGroup *cb.ConfigGroup, bccsp bccsp.BCCSP) (*ChannelConfig, error) {
 	cc := &ChannelConfig{
 		protos: &ChannelProtos{},
 	}
@@ -92,7 +92,7 @@ func NewChannelConfig(channelGroup *cb.ConfigGroup) (*ChannelConfig, error) {
 		return nil, err
 	}
 
-	mspConfigHandler := NewMSPConfigHandler(capabilities.MSPVersion())
+	mspConfigHandler := NewMSPConfigHandler(capabilities.MSPVersion(), bccsp)
 
 	var err error
 	for groupName, group := range channelGroup.Groups {
@@ -138,7 +138,7 @@ func (cc *ChannelConfig) ConsortiumsConfig() *ConsortiumsConfig {
 	return cc.consortiumsConfig
 }
 
-// HashingAlgorithm returns a function pointer to the chain hashing algorihtm
+// HashingAlgorithm returns a function pointer to the chain hashing algorithm
 func (cc *ChannelConfig) HashingAlgorithm() func(input []byte) []byte {
 	return cc.hashingAlgorithm
 }
@@ -160,6 +160,9 @@ func (cc *ChannelConfig) ConsortiumName() string {
 
 // Capabilities returns information about the available capabilities for this channel
 func (cc *ChannelConfig) Capabilities() ChannelCapabilities {
+	_ = cc.protos
+	_ = cc.protos.Capabilities
+	_ = cc.protos.Capabilities.Capabilities
 	return capabilities.NewChannelProvider(cc.protos.Capabilities.Capabilities)
 }
 

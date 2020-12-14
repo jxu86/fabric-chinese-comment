@@ -9,33 +9,34 @@ package nwo
 const DefaultOrdererTemplate = `---
 {{ with $w := . -}}
 General:
-  LedgerType: file
   ListenAddress: 127.0.0.1
   ListenPort: {{ .OrdererPort Orderer "Listen" }}
   TLS:
-    Enabled: true
+    Enabled: {{ .TLSEnabled }}
     PrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
     Certificate: {{ $w.OrdererLocalTLSDir Orderer }}/server.crt
     RootCAs:
     -  {{ $w.OrdererLocalTLSDir Orderer }}/ca.crt
-    ClientAuthRequired: false
+    ClientAuthRequired: {{ $w.ClientAuthRequired }}
     ClientRootCAs:
   Cluster:
     ClientCertificate: {{ $w.OrdererLocalTLSDir Orderer }}/server.crt
     ClientPrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
+    ServerCertificate: {{ $w.OrdererLocalTLSDir Orderer }}/server.crt
+    ServerPrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
     DialTimeout: 5s
     RPCTimeout: 7s
     ReplicationBufferSize: 20971520
     ReplicationPullTimeout: 5s
     ReplicationRetryTimeout: 5s
+    ListenAddress: 127.0.0.1
+    ListenPort: {{ .OrdererPort Orderer "Cluster" }}
   Keepalive:
     ServerMinInterval: 60s
     ServerInterval: 7200s
     ServerTimeout: 20s
-  GenesisMethod: file
-  GenesisProfile: {{ .SystemChannel.Profile }}
-  GenesisFile: {{ .RootDir }}/{{ .SystemChannel.Name }}_block.pb
-  SystemChannel: {{ .SystemChannel.Name }}
+  BootstrapMethod: file
+  BootstrapFile: {{ .RootDir }}/{{ .SystemChannel.Name }}_block.pb
   LocalMSPDir: {{ $w.OrdererLocalMSPDir Orderer }}
   LocalMSPID: {{ ($w.Organization Orderer.Organization).MSPID }}
   Profile:
@@ -53,8 +54,6 @@ General:
 FileLedger:
   Location: {{ .OrdererDir Orderer }}/system
   Prefix: hyperledger-fabric-ordererledger
-RAMLedger:
-  HistorySize: 1000
 {{ if eq .Consensus.Type "kafka" -}}
 Kafka:
   Retry:
@@ -97,20 +96,27 @@ Consensus:
 Operations:
   ListenAddress: 127.0.0.1:{{ .OrdererPort Orderer "Operations" }}
   TLS:
-    Enabled: true
+    Enabled: {{ .TLSEnabled }}
     PrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
     Certificate: {{ $w.OrdererLocalTLSDir Orderer }}/server.crt
     RootCAs:
     -  {{ $w.OrdererLocalTLSDir Orderer }}/ca.crt
-    ClientAuthRequired: false
+    ClientAuthRequired: {{ $w.ClientAuthRequired }}
     ClientRootCAs:
     -  {{ $w.OrdererLocalTLSDir Orderer }}/ca.crt
 Metrics:
   Provider: {{ .MetricsProvider }}
   Statsd:
+    {{- if .StatsdEndpoint }}
+    Network: tcp
+    Address: {{ .StatsdEndpoint }}
+    {{- else }}
     Network: udp
-    Address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}127.0.0.1:8125{{ end }}
+    Address: 127.0.0.1:8125
+    {{- end }}
     WriteInterval: 5s
     Prefix: {{ ReplaceAll (ToLower Orderer.ID) "." "_" }}
 {{- end }}
+ChannelParticipation:
+  Enabled: {{ .ChannelParticipationEnabled }}
 `

@@ -7,14 +7,17 @@ SPDX-License-Identifier: Apache-2.0
 package pvtdatastorage
 
 import (
+	"io/ioutil"
+	"path/filepath"
+
 	"os"
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/core/ledger"
 	btltestutil "github.com/hyperledger/fabric/core/ledger/pvtdatapolicy/testutil"
-	"github.com/spf13/viper"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestV11v12 test that we are able to read the mixed format data (for v11 and v12)
@@ -23,12 +26,12 @@ import (
 // pvt data because, that time peer code was v1.0 and hence no pvt data. Block 10 contains
 // a pvtdata from peer v1.1. Block 11 - 13 has not pvt data. Block 14 has pvt data from peer v1.2
 func TestV11v12(t *testing.T) {
-	testWorkingDir := "test-working-dir"
-	testutil.CopyDir("testdata/v11_v12/ledgersData", testWorkingDir)
+	testWorkingDir, err := ioutil.TempDir("", "pdstore")
+	if err != nil {
+		t.Fatalf("Failed to create private data storage directory: %s", err)
+	}
 	defer os.RemoveAll(testWorkingDir)
-
-	viper.Set("peer.fileSystemPath", testWorkingDir)
-	defer viper.Reset()
+	require.NoError(t, testutil.CopyDir("testdata/v11_v12/ledgersData/pvtdataStore", testWorkingDir, false))
 
 	ledgerid := "ch1"
 	btlPolicy := btltestutil.SampleBTLPolicy(
@@ -37,10 +40,19 @@ func TestV11v12(t *testing.T) {
 			{"marbles_private", "collectionMarblePrivateDetails"}: 0,
 		},
 	)
-	p := NewProvider()
+	conf := &PrivateDataConfig{
+		PrivateDataConfig: &ledger.PrivateDataConfig{
+			BatchesInterval: 1000,
+			MaxBatchSize:    5000,
+			PurgeInterval:   100,
+		},
+		StorePath: filepath.Join(testWorkingDir, "pvtdataStore"),
+	}
+	p, err := NewProvider(conf)
+	require.NoError(t, err)
 	defer p.Close()
 	s, err := p.OpenStore(ledgerid)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	s.Init(btlPolicy)
 
 	for blk := 0; blk < 10; blk++ {
@@ -54,18 +66,18 @@ func TestV11v12(t *testing.T) {
 
 	_, err = s.GetPvtDataByBlockNum(uint64(15), nil)
 	_, ok := err.(*ErrOutOfRange)
-	assert.True(t, ok)
+	require.True(t, ok)
 }
 
-func checkDataNotExists(t *testing.T, s Store, blkNum int) {
+func checkDataNotExists(t *testing.T, s *Store, blkNum int) {
 	data, err := s.GetPvtDataByBlockNum(uint64(blkNum), nil)
-	assert.NoError(t, err)
-	assert.Nil(t, data)
+	require.NoError(t, err)
+	require.Nil(t, data)
 }
 
-func checkDataExists(t *testing.T, s Store, blkNum int) {
+func checkDataExists(t *testing.T, s *Store, blkNum int) {
 	data, err := s.GetPvtDataByBlockNum(uint64(blkNum), nil)
-	assert.NoError(t, err)
-	assert.NotNil(t, data)
+	require.NoError(t, err)
+	require.NotNil(t, data)
 	t.Logf("pvtdata = %s\n", spew.Sdump(data))
 }

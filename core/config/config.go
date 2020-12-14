@@ -106,6 +106,7 @@ func InitViper(v *viper.Viper, configName string) error {
 
 		// CWD
 		AddConfigPath(v, "./")
+
 		// And finally, the official path
 		if dirExists(OfficialPath) {
 			AddConfigPath(v, OfficialPath)

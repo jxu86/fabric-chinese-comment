@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	ab "github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/deliver"
 	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/common/policies"
@@ -21,8 +23,7 @@ import (
 	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
 	"github.com/hyperledger/fabric/orderer/common/multichannel"
-	cb "github.com/hyperledger/fabric/protos/common"
-	ab "github.com/hyperledger/fabric/protos/orderer"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
@@ -64,17 +65,34 @@ func (rs *responseSender) SendStatusResponse(status cb.Status) error {
 	return rs.Send(reply)
 }
 
-func (rs *responseSender) SendBlockResponse(block *cb.Block) error {
+// SendBlockResponse sends block data and ignores pvtDataMap.
+func (rs *responseSender) SendBlockResponse(
+	block *cb.Block,
+	channelID string,
+	chain deliver.Chain,
+	signedData *protoutil.SignedData,
+) error {
 	response := &ab.DeliverResponse{
 		Type: &ab.DeliverResponse_Block{Block: block},
 	}
 	return rs.Send(response)
 }
 
+func (rs *responseSender) DataType() string {
+	return "block"
+}
+
 // NewServer creates an ab.AtomicBroadcastServer based on the broadcast target and ledger Reader
-func NewServer(r *multichannel.Registrar, metricsProvider metrics.Provider, debug *localconfig.Debug, timeWindow time.Duration, mutualTLS bool) ab.AtomicBroadcastServer {
+func NewServer(
+	r *multichannel.Registrar,
+	metricsProvider metrics.Provider,
+	debug *localconfig.Debug,
+	timeWindow time.Duration,
+	mutualTLS bool,
+	expirationCheckDisabled bool,
+) ab.AtomicBroadcastServer {
 	s := &server{
-		dh: deliver.NewHandler(deliverSupport{Registrar: r}, timeWindow, mutualTLS, deliver.NewMetrics(metricsProvider)),
+		dh: deliver.NewHandler(deliverSupport{Registrar: r}, timeWindow, mutualTLS, deliver.NewMetrics(metricsProvider), expirationCheckDisabled),
 		bh: &broadcast.Handler{
 			SupportRegistrar: broadcastSupport{Registrar: r},
 			Metrics:          broadcast.NewMetrics(metricsProvider),
@@ -146,7 +164,6 @@ func (s *server) Broadcast(srv ab.AtomicBroadcast_BroadcastServer) error {
 		}
 		logger.Debugf("Closing Broadcast stream")
 	}()
-	// 对接收到的信息进行处理,order/common/broadcast/broadcast.go
 	return s.bh.Handle(&broadcastMsgTracer{
 		AtomicBroadcast_BroadcastServer: srv,
 		msgTracer: msgTracer{
@@ -190,15 +207,4 @@ func (s *server) Deliver(srv ab.AtomicBroadcast_DeliverServer) error {
 		},
 	}
 	return s.dh.Handle(srv.Context(), deliverServer)
-}
-
-func (s *server) sendProducer(srv ab.AtomicBroadcast_DeliverServer) func(msg proto.Message) error {
-	return func(msg proto.Message) error {
-		response, ok := msg.(*ab.DeliverResponse)
-		if !ok {
-			logger.Errorf("received wrong response type, expected response type ab.DeliverResponse")
-			return errors.New("expected response type ab.DeliverResponse")
-		}
-		return srv.Send(response)
-	}
 }

@@ -9,13 +9,11 @@ package transientstore
 import (
 	"bytes"
 	"errors"
-	"path/filepath"
 
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/ledger/util"
-	"github.com/hyperledger/fabric/core/config"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
 )
 
 var (
@@ -181,12 +179,6 @@ func createPurgeIndexByTxidRangeEndKey(txid string) []byte {
 	return endKey
 }
 
-// GetTransientStorePath returns the filesystem path for temporarily storing the private rwset
-func GetTransientStorePath() string {
-	sysPath := config.GetPath("peer.fileSystemPath")
-	return filepath.Join(sysPath, "transientStore")
-}
-
 // trimPvtWSet returns a `TxPvtReadWriteSet` that retains only list of 'ns/collections' supplied in the filter
 // A nil filter does not filter any results and returns the original `pvtWSet` as is
 func trimPvtWSet(pvtWSet *rwset.TxPvtReadWriteSet, filter ledger.PvtNsCollFilter) *rwset.TxPvtReadWriteSet {
@@ -221,18 +213,18 @@ func trimPvtWSet(pvtWSet *rwset.TxPvtReadWriteSet, filter ledger.PvtNsCollFilter
 	return filteredTxPvtRwSet
 }
 
-func trimPvtCollectionConfigs(configs map[string]*common.CollectionConfigPackage,
-	filter ledger.PvtNsCollFilter) (map[string]*common.CollectionConfigPackage, error) {
+func trimPvtCollectionConfigs(configs map[string]*peer.CollectionConfigPackage,
+	filter ledger.PvtNsCollFilter) (map[string]*peer.CollectionConfigPackage, error) {
 	if filter == nil {
 		return configs, nil
 	}
-	result := make(map[string]*common.CollectionConfigPackage)
+	result := make(map[string]*peer.CollectionConfigPackage)
 
 	for ns, pkg := range configs {
-		result[ns] = &common.CollectionConfigPackage{}
+		result[ns] = &peer.CollectionConfigPackage{}
 		for _, colConf := range pkg.GetConfig() {
 			switch cconf := colConf.Payload.(type) {
-			case *common.CollectionConfig_StaticCollectionConfig:
+			case *peer.CollectionConfig_StaticCollectionConfig:
 				if filter.Has(ns, cconf.StaticCollectionConfig.Name) {
 					result[ns].Config = append(result[ns].Config, colConf)
 				}

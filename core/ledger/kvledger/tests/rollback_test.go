@@ -12,52 +12,51 @@ import (
 
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger"
-	"github.com/hyperledger/fabric/protos/common"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestRollbackKVLedger(t *testing.T) {
-	env := newEnv(defaultConfig, t)
+	env := newEnv(t)
 	defer env.cleanup()
+	env.initLedgerMgmt()
 	// populate ledgers with sample data
 	dataHelper := newSampleDataHelper(t)
-	var blockchainsInfo []*common.BlockchainInfo
 
-	h := newTestHelperCreateLgr("testLedger", t)
+	h := env.newTestHelperCreateLgr("testLedger", t)
 	// populate creates 8 blocks
 	dataHelper.populateLedger(h)
 	dataHelper.verifyLedgerContent(h)
 	bcInfo, err := h.lgr.GetBlockchainInfo()
 	assert.NoError(t, err)
-	blockchainsInfo = append(blockchainsInfo, bcInfo)
-	closeLedgerMgmt()
+	env.closeLedgerMgmt()
 
 	// Rollback the testLedger (invalid rollback params)
-	err = kvledger.RollbackKVLedger("noLedger", 0)
+	err = kvledger.RollbackKVLedger(env.initializer.Config.RootFSPath, "noLedger", 0)
 	assert.Equal(t, "ledgerID [noLedger] does not exist", err.Error())
-	err = kvledger.RollbackKVLedger("testLedger", bcInfo.Height)
+	err = kvledger.RollbackKVLedger(env.initializer.Config.RootFSPath, "testLedger", bcInfo.Height)
 	expectedErr := fmt.Sprintf("target block number [%d] should be less than the biggest block number [%d]",
 		bcInfo.Height, bcInfo.Height-1)
 	assert.Equal(t, expectedErr, err.Error())
 
 	// Rollback the testLedger (valid rollback params)
 	targetBlockNum := bcInfo.Height - 3
-	err = kvledger.RollbackKVLedger("testLedger", targetBlockNum)
+	err = kvledger.RollbackKVLedger(env.initializer.Config.RootFSPath, "testLedger", targetBlockNum)
 	assert.NoError(t, err)
 	rebuildable := rebuildableStatedb + rebuildableBookkeeper + rebuildableConfigHistory + rebuildableHistoryDB
-	env.verifyRebuilableDoesNotExist(rebuildable)
-	initLedgerMgmt()
-	preResetHt, err := kvledger.LoadPreResetHeight()
+	env.verifyRebuilableDirEmpty(rebuildable)
+	env.initLedgerMgmt()
+	preResetHt, err := kvledger.LoadPreResetHeight(env.initializer.Config.RootFSPath, []string{"testLedger"})
+	assert.NoError(t, err)
 	assert.Equal(t, bcInfo.Height, preResetHt["testLedger"])
 	t.Logf("preResetHt = %#v", preResetHt)
 
-	h = newTestHelperOpenLgr("testLedger", t)
+	h = env.newTestHelperOpenLgr("testLedger", t)
 	h.verifyLedgerHeight(targetBlockNum + 1)
 	targetBlockNumIndex := targetBlockNum - 1
 	for _, b := range dataHelper.submittedData["testLedger"].Blocks[targetBlockNumIndex+1:] {
 		// if the pvtData is already present in the pvtdata store, the ledger (during commit) should be
 		// able to fetch them if not passed along with the block.
-		assert.NoError(t, h.lgr.CommitWithPvtData(b, &ledger.CommitOptions{FetchPvtDataFromLedger: true}))
+		assert.NoError(t, h.lgr.CommitLegacy(b, &ledger.CommitOptions{FetchPvtDataFromLedger: true}))
 	}
 	actualBcInfo, err := h.lgr.GetBlockchainInfo()
 	assert.Equal(t, bcInfo, actualBcInfo)
@@ -66,21 +65,22 @@ func TestRollbackKVLedger(t *testing.T) {
 }
 
 func TestRollbackKVLedgerWithBTL(t *testing.T) {
-	env := newEnv(defaultConfig, t)
+	env := newEnv(t)
 	defer env.cleanup()
-	h := newTestHelperCreateLgr("ledger1", t)
+	env.initLedgerMgmt()
+	h := env.newTestHelperCreateLgr("ledger1", t)
 	collConf := []*collConf{{name: "coll1", btl: 0}, {name: "coll2", btl: 1}}
 
 	// deploy cc1 with 'collConf'
 	h.simulateDeployTx("cc1", collConf)
-	h.cutBlockAndCommitWithPvtdata()
+	h.cutBlockAndCommitLegacy()
 
 	// commit pvtdata writes in block 2.
 	h.simulateDataTx("", func(s *simulator) {
 		s.setPvtdata("cc1", "coll1", "key1", "value1") // (key1 would never expire)
 		s.setPvtdata("cc1", "coll2", "key2", "value2") // (key2 would expire at block 4)
 	})
-	blk2 := h.cutBlockAndCommitWithPvtdata()
+	blk2 := h.cutBlockAndCommitLegacy()
 
 	// After commit of block 2
 	h.verifyPvtState("cc1", "coll1", "key1", "value1") // key1 should still exist in the state
@@ -93,7 +93,7 @@ func TestRollbackKVLedgerWithBTL(t *testing.T) {
 			s.setPvtdata("cc1", "coll1", "someOtherKey", "someOtherVal")
 			s.setPvtdata("cc1", "coll2", "someOtherKey", "someOtherVal")
 		})
-		h.cutBlockAndCommitWithPvtdata()
+		h.cutBlockAndCommitLegacy()
 	}
 
 	// After commit of block 4
@@ -109,17 +109,17 @@ func TestRollbackKVLedgerWithBTL(t *testing.T) {
 		s.setPvtdata("cc1", "coll1", "someOtherKey", "someOtherVal")
 		s.setPvtdata("cc1", "coll2", "someOtherKey", "someOtherVal")
 	})
-	h.cutBlockAndCommitWithPvtdata()
-	closeLedgerMgmt()
+	h.cutBlockAndCommitLegacy()
+	env.closeLedgerMgmt()
 
 	// rebuild statedb and bookkeeper
-	err := kvledger.RollbackKVLedger("ledger1", 4)
+	err := kvledger.RollbackKVLedger(env.initializer.Config.RootFSPath, "ledger1", 4)
 	assert.NoError(t, err)
 	rebuildable := rebuildableStatedb | rebuildableBookkeeper | rebuildableConfigHistory | rebuildableHistoryDB
-	env.verifyRebuilableDoesNotExist(rebuildable)
+	env.verifyRebuilableDirEmpty(rebuildable)
 
-	initLedgerMgmt()
-	h = newTestHelperOpenLgr("ledger1", t)
+	env.initLedgerMgmt()
+	h = env.newTestHelperOpenLgr("ledger1", t)
 	h.verifyPvtState("cc1", "coll1", "key1", "value1")                  // key1 should still exist in the state
 	h.verifyPvtState("cc1", "coll2", "key2", "")                        // key2 should have been purged from the state
 	h.verifyBlockAndPvtData(2, nil, func(r *retrievedBlockAndPvtdata) { // retrieve the pvtdata for block 2 from pvtdata storage
@@ -132,14 +132,14 @@ func TestRollbackKVLedgerWithBTL(t *testing.T) {
 		s.setPvtdata("cc1", "coll1", "someOtherKey", "someOtherVal")
 		s.setPvtdata("cc1", "coll2", "someOtherKey", "someOtherVal")
 	})
-	h.cutBlockAndCommitWithPvtdata()
+	h.cutBlockAndCommitLegacy()
 
 	// commit pvtdata writes in block 6.
 	h.simulateDataTx("", func(s *simulator) {
 		s.setPvtdata("cc1", "coll1", "key3", "value1") // (key3 would never expire)
 		s.setPvtdata("cc1", "coll2", "key4", "value2") // (key4 would expire at block 8)
 	})
-	h.cutBlockAndCommitWithPvtdata()
+	h.cutBlockAndCommitLegacy()
 
 	// commit 2 more blocks with some random key/vals
 	for i := 0; i < 2; i++ {
@@ -147,7 +147,7 @@ func TestRollbackKVLedgerWithBTL(t *testing.T) {
 			s.setPvtdata("cc1", "coll1", "someOtherKey", "someOtherVal")
 			s.setPvtdata("cc1", "coll2", "someOtherKey", "someOtherVal")
 		})
-		h.cutBlockAndCommitWithPvtdata()
+		h.cutBlockAndCommitLegacy()
 	}
 
 	// After commit of block 8

@@ -15,12 +15,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/internal/pkg/identity"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 )
@@ -31,7 +31,7 @@ type BlockPuller struct {
 	// Configuration
 	MaxPullBlockRetries uint64
 	MaxTotalBufferBytes int
-	Signer              crypto.LocalSigner
+	Signer              identity.SignerSerializer
 	TLSCert             []byte
 	Channel             string
 	FetchTimeout        time.Duration
@@ -426,7 +426,7 @@ func extractBlockFromResponse(resp *orderer.DeliverResponse) (*common.Block, err
 }
 
 func (p *BlockPuller) seekLastEnvelope() (*common.Envelope, error) {
-	return utils.CreateSignedEnvelopeWithTLSBinding(
+	return protoutil.CreateSignedEnvelopeWithTLSBinding(
 		common.HeaderType_DELIVER_SEEK_INFO,
 		p.Channel,
 		p.Signer,
@@ -438,7 +438,7 @@ func (p *BlockPuller) seekLastEnvelope() (*common.Envelope, error) {
 }
 
 func (p *BlockPuller) seekNextEnvelope(startSeq uint64) (*common.Envelope, error) {
-	return utils.CreateSignedEnvelopeWithTLSBinding(
+	return protoutil.CreateSignedEnvelopeWithTLSBinding(
 		common.HeaderType_DELIVER_SEEK_INFO,
 		p.Channel,
 		p.Signer,
@@ -468,7 +468,7 @@ func nextSeekInfo(startSeq uint64) *orderer.SeekInfo {
 }
 
 func blockSize(block *common.Block) int {
-	return len(utils.MarshalOrPanic(block))
+	return len(protoutil.MarshalOrPanic(block))
 }
 
 type endpointInfo struct {

@@ -7,31 +7,30 @@ SPDX-License-Identifier: Apache-2.0
 package etcdraft
 
 import (
-	"bytes"
 	"path"
 	"reflect"
 	"time"
 
 	"code.cloudfoundry.org/clock"
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
+	"github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics"
-	"github.com/hyperledger/fabric/common/viperutil"
-	"github.com/hyperledger/fabric/core/comm"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/common/multichannel"
 	"github.com/hyperledger/fabric/orderer/consensus"
+	"github.com/hyperledger/fabric/orderer/consensus/follower"
 	"github.com/hyperledger/fabric/orderer/consensus/inactive"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/orderer/etcdraft"
+	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
 	"go.etcd.io/etcd/raft"
 )
-
-// CreateChainCallback creates a new chain
-type CreateChainCallback func()
 
 //go:generate mockery -dir . -name InactiveChainRegistry -case underscore -output mocks
 
@@ -39,7 +38,7 @@ type CreateChainCallback func()
 type InactiveChainRegistry interface {
 	// TrackChain tracks a chain with the given name, and calls the given callback
 	// when this chain should be created.
-	TrackChain(chainName string, genesisBlock *common.Block, createChain CreateChainCallback)
+	TrackChain(chainName string, genesisBlock *common.Block, createChain func())
 }
 
 //go:generate mockery -dir . -name ChainGetter -case underscore -output mocks
@@ -59,7 +58,7 @@ type Config struct {
 	EvictionSuspicion string // Duration threshold that the node samples in order to suspect its eviction from the channel.
 }
 
-// Consenter implements etddraft consenter
+// Consenter implements etcdraft consenter
 type Consenter struct {
 	CreateChain           func(chainName string)
 	InactiveChainRegistry InactiveChainRegistry
@@ -72,6 +71,7 @@ type Consenter struct {
 	OrdererConfig  localconfig.TopLevel
 	Cert           []byte
 	Metrics        *Metrics
+	BCCSP          bccsp.BCCSP
 }
 
 // TargetChannel extracts the channel from the given proto.Message.
@@ -119,7 +119,7 @@ func (c *Consenter) detectSelfID(consenters map[uint64]*etcdraft.Consenter) (uin
 			return 0, err
 		}
 
-		if bytes.Equal(thisNodeCertAsDER, certAsDER) {
+		if crypto.CertificatesWithSamePublicKey(thisNodeCertAsDER, certAsDER) == nil {
 			return nodeID, nil
 		}
 	}
@@ -155,17 +155,19 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 		return nil, errors.Wrapf(err, "failed to read Raft metadata")
 	}
 
-	consenters := map[uint64]*etcdraft.Consenter{}
-	for i, consenter := range m.Consenters {
-		consenters[blockMetadata.ConsenterIds[i]] = consenter
-	}
+	consenters := CreateConsentersMap(blockMetadata, m)
 
 	id, err := c.detectSelfID(consenters)
 	if err != nil {
-		c.InactiveChainRegistry.TrackChain(support.ChainID(), support.Block(0), func() {
-			c.CreateChain(support.ChainID())
-		})
-		return &inactive.Chain{Err: errors.Errorf("channel %s is not serviced by me", support.ChainID())}, nil
+		if c.InactiveChainRegistry != nil {
+			c.InactiveChainRegistry.TrackChain(support.ChannelID(), support.Block(0), func() {
+				c.CreateChain(support.ChannelID())
+			})
+			return &inactive.Chain{Err: errors.Errorf("channel %s is not serviced by me", support.ChannelID())}, nil
+		} else {
+			//TODO fully construct a follower chain
+			return &follower.Chain{Err: errors.Errorf("orderer is a follower of channel %s", support.ChannelID())}, nil
+		}
 	}
 
 	var evictionSuspicion time.Duration
@@ -202,8 +204,8 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 
 		MigrationInit: isMigration,
 
-		WALDir:            path.Join(c.EtcdRaftConfig.WALDir, support.ChainID()),
-		SnapDir:           path.Join(c.EtcdRaftConfig.SnapDir, support.ChainID()),
+		WALDir:            path.Join(c.EtcdRaftConfig.WALDir, support.ChannelID()),
+		SnapDir:           path.Join(c.EtcdRaftConfig.SnapDir, support.ChannelID()),
 		EvictionSuspicion: evictionSuspicion,
 		Cert:              c.Cert,
 		Metrics:           c.Metrics,
@@ -212,18 +214,50 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 	rpc := &cluster.RPC{
 		Timeout:       c.OrdererConfig.General.Cluster.RPCTimeout,
 		Logger:        c.Logger,
-		Channel:       support.ChainID(),
+		Channel:       support.ChannelID(),
 		Comm:          c.Communication,
 		StreamsByType: cluster.NewStreamsByType(),
 	}
+
+	// when we have a system channel
+	if c.InactiveChainRegistry != nil {
+		return NewChain(
+			support,
+			opts,
+			c.Communication,
+			rpc,
+			c.BCCSP,
+			func() (BlockPuller, error) {
+				return NewBlockPuller(support, c.Dialer, c.OrdererConfig.General.Cluster, c.BCCSP)
+			},
+			func() {
+				c.InactiveChainRegistry.TrackChain(support.ChannelID(), nil, func() { c.CreateChain(support.ChannelID()) })
+			},
+			nil,
+		)
+	}
+
+	// when we do NOT have a system channel
 	return NewChain(
 		support,
 		opts,
 		c.Communication,
 		rpc,
-		func() (BlockPuller, error) { return newBlockPuller(support, c.Dialer, c.OrdererConfig.General.Cluster) },
+		c.BCCSP,
+		func() (BlockPuller, error) {
+			return NewBlockPuller(support, c.Dialer, c.OrdererConfig.General.Cluster, c.BCCSP)
+		},
+		func() {
+			c.Logger.Warning("Start a follower.Chain: not yet implemented")
+			//TODO start follower.Chain
+		},
 		nil,
 	)
+}
+
+func (c *Consenter) JoinChain(support consensus.ConsenterSupport, joinBlock *common.Block) (consensus.Chain, error) {
+	//TODO fully construct a follower.Chain
+	return nil, errors.New("not implemented")
 }
 
 // ReadBlockMetadata attempts to read raft metadata from block metadata, if available.
@@ -259,11 +293,13 @@ func New(
 	r *multichannel.Registrar,
 	icr InactiveChainRegistry,
 	metricsProvider metrics.Provider,
+	bccsp bccsp.BCCSP,
 ) *Consenter {
 	logger := flogging.MustGetLogger("orderer.consensus.etcdraft")
 
 	var cfg Config
-	if err := viperutil.Decode(conf.Consensus, &cfg); err != nil {
+	err := mapstructure.Decode(conf.Consensus, &cfg)
+	if err != nil {
 		logger.Panicf("Failed to decode etcdraft configuration: %s", err)
 	}
 
@@ -277,6 +313,7 @@ func New(
 		Dialer:                clusterDialer,
 		Metrics:               NewMetrics(metricsProvider),
 		InactiveChainRegistry: icr,
+		BCCSP:                 bccsp,
 	}
 	consenter.Dispatcher = &Dispatcher{
 		Logger:        logger,
@@ -296,21 +333,37 @@ func New(
 		Dispatcher: comm,
 	}
 	orderer.RegisterClusterServer(srv.Server(), svc)
+
+	if icr == nil {
+		logger.Debug("Created an etcdraft consenter without a system channel, InactiveChainRegistry is nil")
+	}
+
 	return consenter
 }
 
 func createComm(clusterDialer *cluster.PredicateDialer, c *Consenter, config localconfig.Cluster, p metrics.Provider) *cluster.Comm {
 	metrics := cluster.NewMetrics(p)
+	logger := flogging.MustGetLogger("orderer.common.cluster")
+
+	compareCert := cluster.CachePublicKeyComparisons(func(a, b []byte) bool {
+		err := crypto.CertificatesWithSamePublicKey(a, b)
+		if err != nil && err != crypto.ErrPubKeyMismatch {
+			crypto.LogNonPubKeyMismatchErr(logger.Errorf, err, a, b)
+		}
+		return err == nil
+	})
+
 	comm := &cluster.Comm{
 		MinimumExpirationWarningInterval: cluster.MinimumExpirationWarningInterval,
 		CertExpWarningThreshold:          config.CertExpirationWarningThreshold,
 		SendBufferSize:                   config.SendBufferSize,
-		Logger:                           flogging.MustGetLogger("orderer.common.cluster"),
+		Logger:                           logger,
 		Chan2Members:                     make(map[string]cluster.MemberMapping),
 		Connections:                      cluster.NewConnectionStore(clusterDialer, metrics.EgressTLSConnectionCount),
 		Metrics:                          metrics,
 		ChanExt:                          c,
 		H:                                c,
+		CompareCertificate:               compareCert,
 	}
 	c.Communication = comm
 	return comm

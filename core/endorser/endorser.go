@@ -13,20 +13,17 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/channelconfig"
-	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric-chaincode-go/shim"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric-protos-go/transientstore"
 	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/core/chaincode/platforms"
-	"github.com/hyperledger/fabric/core/chaincode/shim"
+	"github.com/hyperledger/fabric/core/chaincode/lifecycle"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
-	"github.com/hyperledger/fabric/core/common/validation"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/protos/common"
-	pb "github.com/hyperledger/fabric/protos/peer"
-	"github.com/hyperledger/fabric/protos/transientstore"
-	putils "github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/internal/pkg/identity"
+	"github.com/hyperledger/fabric/msp"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
@@ -36,15 +33,15 @@ var endorserLogger = flogging.MustGetLogger("endorser")
 // The Jira issue that documents Endorser flow along with its relationship to
 // the lifecycle chaincode - https://jira.hyperledger.org/browse/FAB-181
 
-type privateDataDistributor func(channel string, txID string, privateData *transientstore.TxPvtReadWriteSetWithConfigInfo, blkHt uint64) error
+//go:generate counterfeiter -o fake/prvt_data_distributor.go --fake-name PrivateDataDistributor . PrivateDataDistributor
+
+type PrivateDataDistributor interface {
+	DistributePrivateData(channel string, txID string, privateData *transientstore.TxPvtReadWriteSetWithConfigInfo, blkHt uint64) error
+}
 
 // Support contains functions that the endorser requires to execute its tasks
 type Support interface {
-	crypto.SignerSupport
-	// IsSysCCAndNotInvokableExternal returns true if the supplied chaincode is
-	// ia system chaincode and it NOT invokable
-	IsSysCCAndNotInvokableExternal(name string) bool
-
+	identity.SignerSerializer
 	// GetTxSimulator returns the transaction simulator for the specified ledger
 	// a client may obtain more than one such simulator; they are made unique
 	// by way of the supplied txid
@@ -62,99 +59,79 @@ type Support interface {
 	IsSysCC(name string) bool
 
 	// Execute - execute proposal, return original response of chaincode
-	Execute(txParams *ccprovider.TransactionParams, cid, name, version, txid string, signedProp *pb.SignedProposal, prop *pb.Proposal, input *pb.ChaincodeInput) (*pb.Response, *pb.ChaincodeEvent, error)
+	Execute(txParams *ccprovider.TransactionParams, name string, input *pb.ChaincodeInput) (*pb.Response, *pb.ChaincodeEvent, error)
 
 	// ExecuteLegacyInit - executes a deployment proposal, return original response of chaincode
-	ExecuteLegacyInit(txParams *ccprovider.TransactionParams, cid, name, version, txid string, signedProp *pb.SignedProposal, prop *pb.Proposal, spec *pb.ChaincodeDeploymentSpec) (*pb.Response, *pb.ChaincodeEvent, error)
+	ExecuteLegacyInit(txParams *ccprovider.TransactionParams, name, version string, spec *pb.ChaincodeInput) (*pb.Response, *pb.ChaincodeEvent, error)
 
-	// GetChaincodeDefinition returns ccprovider.ChaincodeDefinition for the chaincode with the supplied name
-	GetChaincodeDefinition(chaincodeID string, txsim ledger.QueryExecutor) (ccprovider.ChaincodeDefinition, error)
+	// ChaincodeEndorsementInfo returns the information from lifecycle required to endorse the chaincode.
+	ChaincodeEndorsementInfo(channelID, chaincodeID string, txsim ledger.QueryExecutor) (*lifecycle.ChaincodeEndorsementInfo, error)
 
 	// CheckACL checks the ACL for the resource for the channel using the
 	// SignedProposal from which an id can be extracted for testing against a policy
-	CheckACL(signedProp *pb.SignedProposal, chdr *common.ChannelHeader, shdr *common.SignatureHeader, hdrext *pb.ChaincodeHeaderExtension) error
-
-	// IsJavaCC returns true if the CDS package bytes describe a chaincode
-	// that requires the java runtime environment to execute
-	IsJavaCC(buf []byte) (bool, error)
-
-	// CheckInstantiationPolicy returns an error if the instantiation in the supplied
-	// ChaincodeDefinition differs from the instantiation policy stored on the ledger
-	CheckInstantiationPolicy(name, version string, cd ccprovider.ChaincodeDefinition) error
-
-	// GetChaincodeDeploymentSpecFS returns the deploymentspec for a chaincode from the fs
-	GetChaincodeDeploymentSpecFS(cds *pb.ChaincodeDeploymentSpec) (*pb.ChaincodeDeploymentSpec, error)
-
-	// GetApplicationConfig returns the configtxapplication.SharedConfig for the Channel
-	// and whether the Application config exists
-	GetApplicationConfig(cid string) (channelconfig.Application, bool)
-
-	// NewQueryCreator creates a new QueryCreator
-	NewQueryCreator(channel string) (QueryCreator, error)
+	CheckACL(channelID string, signedProp *pb.SignedProposal) error
 
 	// EndorseWithPlugin endorses the response with a plugin
-	EndorseWithPlugin(ctx Context) (*pb.ProposalResponse, error)
+	EndorseWithPlugin(pluginName, channnelID string, prpBytes []byte, signedProposal *pb.SignedProposal) (*pb.Endorsement, []byte, error)
 
 	// GetLedgerHeight returns ledger height for given channelID
 	GetLedgerHeight(channelID string) (uint64, error)
+
+	// GetDeployedCCInfoProvider returns ledger.DeployedChaincodeInfoProvider
+	GetDeployedCCInfoProvider() ledger.DeployedChaincodeInfoProvider
+}
+
+//go:generate counterfeiter -o fake/channel_fetcher.go --fake-name ChannelFetcher . ChannelFetcher
+
+// ChannelFetcher fetches the channel context for a given channel ID.
+type ChannelFetcher interface {
+	Channel(channelID string) *Channel
+}
+
+type Channel struct {
+	IdentityDeserializer msp.IdentityDeserializer
 }
 
 // Endorser provides the Endorser service ProcessProposal
 type Endorser struct {
-	distributePrivateData privateDataDistributor
-	s                     Support
-	PlatformRegistry      *platforms.Registry
-	PvtRWSetAssembler
-	Metrics *EndorserMetrics
-}
-
-// validateResult provides the result of endorseProposal verification
-type validateResult struct {
-	prop    *pb.Proposal
-	hdrExt  *pb.ChaincodeHeaderExtension
-	chainID string
-	txid    string
-	resp    *pb.ProposalResponse
-}
-
-// NewEndorserServer creates and returns a new Endorser server instance.
-func NewEndorserServer(privDist privateDataDistributor, s Support, pr *platforms.Registry, metricsProv metrics.Provider) *Endorser {
-	e := &Endorser{
-		distributePrivateData: privDist,
-		s:                 s,
-		PlatformRegistry:  pr,
-		PvtRWSetAssembler: &rwSetAssembler{},
-		Metrics:           NewEndorserMetrics(metricsProv),
-	}
-	return e
+	ChannelFetcher         ChannelFetcher
+	LocalMSP               msp.IdentityDeserializer
+	PrivateDataDistributor PrivateDataDistributor
+	Support                Support
+	PvtRWSetAssembler      PvtRWSetAssembler
+	Metrics                *Metrics
 }
 
 // call specified chaincode (system or user)
-func (e *Endorser) callChaincode(txParams *ccprovider.TransactionParams, version string, input *pb.ChaincodeInput, cid *pb.ChaincodeID) (*pb.Response, *pb.ChaincodeEvent, error) {
-	endorserLogger.Infof("[%s][%s] Entry chaincode: %s", txParams.ChannelID, shorttxid(txParams.TxID), cid)
+func (e *Endorser) callChaincode(txParams *ccprovider.TransactionParams, input *pb.ChaincodeInput, chaincodeName string) (*pb.Response, *pb.ChaincodeEvent, error) {
 	defer func(start time.Time) {
 		logger := endorserLogger.WithOptions(zap.AddCallerSkip(1))
-		elapsedMilliseconds := time.Since(start).Round(time.Millisecond) / time.Millisecond
-		logger.Infof("[%s][%s] Exit chaincode: %s (%dms)", txParams.ChannelID, shorttxid(txParams.TxID), cid, elapsedMilliseconds)
+		logger = decorateLogger(logger, txParams)
+		elapsedMillisec := time.Since(start).Milliseconds()
+		logger.Infof("finished chaincode: %s duration: %dms", chaincodeName, elapsedMillisec)
 	}(time.Now())
 
-	var err error
-	var res *pb.Response
-	var ccevent *pb.ChaincodeEvent
+	meterLabels := []string{
+		"channel", txParams.ChannelID,
+		"chaincode", chaincodeName,
+	}
 
-	// is this a system chaincode
-	// 执行链码，如果是用户链码具体怎么执行的要看用户写的链码逻辑，执行完毕后返回响应信息与链码事件
-	res, ccevent, err = e.s.Execute(txParams, txParams.ChannelID, cid.Name, version, txParams.TxID, txParams.SignedProp, txParams.Proposal, input)
+	res, ccevent, err := e.Support.Execute(txParams, chaincodeName, input)
 	if err != nil {
+		e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
 		return nil, nil, err
 	}
 
 	// per doc anything < 400 can be sent as TX.
 	// fabric errors will always be >= 400 (ie, unambiguous errors )
 	// "lscc" will respond with status 200 or 500 (ie, unambiguous OK or ERROR)
-	// 状态常量一共有三个：OK = 200 ERRORTHRESHOLD = 400 ERROR = 500 大于等于400就是错误信息或者被背书节点拒绝。
 	if res.Status >= shim.ERRORTHRESHOLD {
 		return res, nil, nil
+	}
+
+	// Unless this is the weirdo LSCC case, just return
+	if chaincodeName != "lscc" || len(input.Args) < 3 || (string(input.Args[0]) != "deploy" && string(input.Args[0]) != "upgrade") {
+		return res, ccevent, nil
 	}
 
 	// ----- BEGIN -  SECTION THAT MAY NEED TO BE DONE IN LSCC ------
@@ -165,334 +142,232 @@ func (e *Endorser) callChaincode(txParams *ccprovider.TransactionParams, version
 	//
 	// NOTE that if there's an error all simulation, including the chaincode
 	// table changes in lscc will be thrown away
-	// 判断调用的链码是否为lscc,如果是lscc判断传入的参数是否大于等于3，并且调用的方法是否为deploy或者upgrade，如果是用户链码到这是方法就结束了。
-	if cid.Name == "lscc" && len(input.Args) >= 3 && (string(input.Args[0]) == "deploy" || string(input.Args[0]) == "upgrade") {
-		// 获取链码部署的基本结构,deploy与upgrade都需要对链码进行部署
-		userCDS, err := putils.GetChaincodeDeploymentSpec(input.Args[2], e.PlatformRegistry)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		var cds *pb.ChaincodeDeploymentSpec
-		cds, err = e.SanitizeUserCDS(userCDS)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		// this should not be a system chaincode
-		if e.s.IsSysCC(cds.ChaincodeSpec.ChaincodeId.Name) {
-			return nil, nil, errors.Errorf("attempting to deploy a system chaincode %s/%s", cds.ChaincodeSpec.ChaincodeId.Name, txParams.ChannelID)
-		}
-		// 执行链码的Init,具体如何执行的这里就不再看了,不然内容更多了
-		_, _, err = e.s.ExecuteLegacyInit(txParams, txParams.ChannelID, cds.ChaincodeSpec.ChaincodeId.Name, cds.ChaincodeSpec.ChaincodeId.Version, txParams.TxID, txParams.SignedProp, txParams.Proposal, cds)
-		if err != nil {
-			// increment the failure to indicate instantion/upgrade failures
-			meterLabels := []string{
-				"channel", txParams.ChannelID,
-				"chaincode", cds.ChaincodeSpec.ChaincodeId.Name + ":" + cds.ChaincodeSpec.ChaincodeId.Version,
-			}
-			e.Metrics.InitFailed.With(meterLabels...).Add(1)
-			return nil, nil, err
-		}
+	cds, err := protoutil.UnmarshalChaincodeDeploymentSpec(input.Args[2])
+	if err != nil {
+		e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+		return nil, nil, err
 	}
-	// ----- END -------
+
+	// this should not be a system chaincode
+	if e.Support.IsSysCC(cds.ChaincodeSpec.ChaincodeId.Name) {
+		e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+		return nil, nil, errors.Errorf("attempting to deploy a system chaincode %s/%s", cds.ChaincodeSpec.ChaincodeId.Name, txParams.ChannelID)
+	}
+
+	if len(cds.CodePackage) != 0 {
+		e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+		return nil, nil, errors.Errorf("lscc upgrade/deploy should not include a code packages")
+	}
+
+	_, _, err = e.Support.ExecuteLegacyInit(txParams, cds.ChaincodeSpec.ChaincodeId.Name, cds.ChaincodeSpec.ChaincodeId.Version, cds.ChaincodeSpec.Input)
+	if err != nil {
+		// increment the failure to indicate instantion/upgrade failures
+		meterLabels = []string{
+			"channel", txParams.ChannelID,
+			"chaincode", cds.ChaincodeSpec.ChaincodeId.Name,
+		}
+		e.Metrics.InitFailed.With(meterLabels...).Add(1)
+		return nil, nil, err
+	}
 
 	return res, ccevent, err
-}
 
-func (e *Endorser) SanitizeUserCDS(userCDS *pb.ChaincodeDeploymentSpec) (*pb.ChaincodeDeploymentSpec, error) {
-	fsCDS, err := e.s.GetChaincodeDeploymentSpecFS(userCDS)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot deploy a chaincode which is not installed")
-	}
-
-	sanitizedCDS := proto.Clone(fsCDS).(*pb.ChaincodeDeploymentSpec)
-	sanitizedCDS.CodePackage = nil
-	sanitizedCDS.ChaincodeSpec.Input = userCDS.ChaincodeSpec.Input
-
-	return sanitizedCDS, nil
 }
 
 // SimulateProposal simulates the proposal by calling the chaincode
-func (e *Endorser) SimulateProposal(txParams *ccprovider.TransactionParams, cid *pb.ChaincodeID) (ccprovider.ChaincodeDefinition, *pb.Response, []byte, *pb.ChaincodeEvent, error) {
-	endorserLogger.Debugf("[%s][%s] Entry chaincode: %s", txParams.ChannelID, shorttxid(txParams.TxID), cid)
-	defer endorserLogger.Debugf("[%s][%s] Exit", txParams.ChannelID, shorttxid(txParams.TxID))
-	// we do expect the payload to be a ChaincodeInvocationSpec
-	// if we are supporting other payloads in future, this be glaringly point
-	// as something that should change
-	// 获取链码调用的细节
-	cis, err := putils.GetChaincodeInvocationSpec(txParams.Proposal)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
+func (e *Endorser) SimulateProposal(txParams *ccprovider.TransactionParams, chaincodeName string, chaincodeInput *pb.ChaincodeInput) (*pb.Response, []byte, *pb.ChaincodeEvent, error) {
+	logger := decorateLogger(endorserLogger, txParams)
 
-	var cdLedger ccprovider.ChaincodeDefinition
-	var version string
-
-	if !e.s.IsSysCC(cid.Name) { // 不是系统链码
-		// 获取链码的标准数据结构
-		cdLedger, err = e.s.GetChaincodeDefinition(cid.Name, txParams.TXSimulator)
-		if err != nil {
-			return nil, nil, nil, nil, errors.WithMessage(err, fmt.Sprintf("make sure the chaincode %s has been successfully instantiated and try again", cid.Name))
-		}
-		// 获取用户链码版本
-		version = cdLedger.CCVersion()
-		// 检查链码实例化策略
-		err = e.s.CheckInstantiationPolicy(cid.Name, version, cdLedger)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-	} else {
-		// 如果调用的是系统链码，仅仅获取系统链码的版本
-		version = util.GetSysCCVersion()
+	meterLabels := []string{
+		"channel", txParams.ChannelID,
+		"chaincode", chaincodeName,
 	}
 
 	// ---3. execute the proposal and get simulation results
-	var simResult *ledger.TxSimulationResults	// 定义一个Tx模拟结果集
-	var pubSimResBytes []byte					// 一个byte数组，保存public的模拟响应结果
-	var res *pb.Response						// 响应信息
-	var ccevent *pb.ChaincodeEvent				// 链码事件
-	// 执行链码进行模拟
-	res, ccevent, err = e.callChaincode(txParams, version, cis.ChaincodeSpec.Input, cid)
+	res, ccevent, err := e.callChaincode(txParams, chaincodeInput, chaincodeName)
 	if err != nil {
-		endorserLogger.Errorf("[%s][%s] failed to invoke chaincode %s, error: %+v", txParams.ChannelID, shorttxid(txParams.TxID), cid, err)
-		return nil, nil, nil, nil, err
+		logger.Errorf("failed to invoke chaincode %s, error: %+v", chaincodeName, err)
+		return nil, nil, nil, err
 	}
 
-	if txParams.TXSimulator != nil {
-		// GetTxSimulationResults()获取Tx模拟结果集
-		if simResult, err = txParams.TXSimulator.GetTxSimulationResults(); err != nil {
-			txParams.TXSimulator.Done()
-			return nil, nil, nil, nil, err
-		}
-		// 之前提到Tx模拟结果集中不仅仅只有公共读写集，还有私有的读写集,接下来判断私有的读写集是否为空
-		if simResult.PvtSimulationResults != nil {
-			if cid.Name == "lscc" {
-				// TODO: remove once we can store collection configuration outside of LSCC
-				txParams.TXSimulator.Done()
-				return nil, nil, nil, nil, errors.New("Private data is forbidden to be used in instantiate")
-			}
-			pvtDataWithConfig, err := e.AssemblePvtRWSet(simResult.PvtSimulationResults, txParams.TXSimulator)
-			// To read collection config need to read collection updates before
-			// releasing the lock, hence txParams.TXSimulator.Done()  moved down here
-			txParams.TXSimulator.Done()
+	if txParams.TXSimulator == nil {
+		return res, nil, ccevent, nil
+	}
 
-			if err != nil {
-				return nil, nil, nil, nil, errors.WithMessage(err, "failed to obtain collections config")
-			}
-			endorsedAt, err := e.s.GetLedgerHeight(txParams.ChannelID)
-			if err != nil {
-				return nil, nil, nil, nil, errors.WithMessage(err, fmt.Sprint("failed to obtain ledger height for channel", txParams.ChannelID))
-			}
-			// Add ledger height at which transaction was endorsed,
-			// `endorsedAt` is obtained from the block storage and at times this could be 'endorsement Height + 1'.
-			// However, since we use this height only to select the configuration (3rd parameter in distributePrivateData) and
-			// manage transient store purge for orphaned private writesets (4th parameter in distributePrivateData), this works for now.
-			// Ideally, ledger should add support in the simulator as a first class function `GetHeight()`.
-			pvtDataWithConfig.EndorsedAt = endorsedAt
-			if err := e.distributePrivateData(txParams.ChannelID, txParams.TxID, pvtDataWithConfig, endorsedAt); err != nil {
-				return nil, nil, nil, nil, err
-			}
-		}
+	// Note, this is a little goofy, as if there is private data, Done() gets called
+	// early, so this is invoked multiple times, but that is how the code worked before
+	// this change, so, should be safe.  Long term, let's move the Done up to the create.
+	defer txParams.TXSimulator.Done()
 
+	simResult, err := txParams.TXSimulator.GetTxSimulationResults()
+	if err != nil {
+		e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+		return nil, nil, nil, err
+	}
+
+	if simResult.PvtSimulationResults != nil {
+		if chaincodeName == "lscc" {
+			// TODO: remove once we can store collection configuration outside of LSCC
+			e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+			return nil, nil, nil, errors.New("Private data is forbidden to be used in instantiate")
+		}
+		pvtDataWithConfig, err := AssemblePvtRWSet(txParams.ChannelID, simResult.PvtSimulationResults, txParams.TXSimulator, e.Support.GetDeployedCCInfoProvider())
+		// To read collection config need to read collection updates before
+		// releasing the lock, hence txParams.TXSimulator.Done()  moved down here
 		txParams.TXSimulator.Done()
-		if pubSimResBytes, err = simResult.GetPubSimulationBytes(); err != nil {
-			return nil, nil, nil, nil, err
-		}
-	}
-	return cdLedger, res, pubSimResBytes, ccevent, nil
-}
 
-// endorse the proposal by calling the ESCC
-func (e *Endorser) endorseProposal(_ context.Context, chainID string, txid string, signedProp *pb.SignedProposal, proposal *pb.Proposal, response *pb.Response, simRes []byte, event *pb.ChaincodeEvent, visibility []byte, ccid *pb.ChaincodeID, txsim ledger.TxSimulator, cd ccprovider.ChaincodeDefinition) (*pb.ProposalResponse, error) {
-	endorserLogger.Debugf("[%s][%s] Entry chaincode: %s", chainID, shorttxid(txid), ccid)
-	defer endorserLogger.Debugf("[%s][%s] Exit", chainID, shorttxid(txid))
-
-	isSysCC := cd == nil
-	// 1) extract the name of the escc that is requested to endorse this chaincode
-	var escc string
-	// ie, "lscc" or system chaincodes
-	// 判断是否是系统链码
-	if isSysCC { // 如果是系统链码，则使用escc进行背书
-		escc = "escc"
-	} else {
-		escc = cd.Endorsement()
-	}
-
-	endorserLogger.Debugf("[%s][%s] escc for chaincode %s is %s", chainID, shorttxid(txid), ccid, escc)
-
-	// marshalling event bytes
-	var err error
-	var eventBytes []byte
-	if event != nil { // 如果链码事件不为空
-		// 获取链码事件
-		eventBytes, err = putils.GetBytesChaincodeEvent(event)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to marshal event bytes")
+			e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+			return nil, nil, nil, errors.WithMessage(err, "failed to obtain collections config")
+		}
+		endorsedAt, err := e.Support.GetLedgerHeight(txParams.ChannelID)
+		if err != nil {
+			e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+			return nil, nil, nil, errors.WithMessage(err, fmt.Sprintf("failed to obtain ledger height for channel '%s'", txParams.ChannelID))
+		}
+		// Add ledger height at which transaction was endorsed,
+		// `endorsedAt` is obtained from the block storage and at times this could be 'endorsement Height + 1'.
+		// However, since we use this height only to select the configuration (3rd parameter in distributePrivateData) and
+		// manage transient store purge for orphaned private writesets (4th parameter in distributePrivateData), this works for now.
+		// Ideally, ledger should add support in the simulator as a first class function `GetHeight()`.
+		pvtDataWithConfig.EndorsedAt = endorsedAt
+		if err := e.PrivateDataDistributor.DistributePrivateData(txParams.ChannelID, txParams.TxID, pvtDataWithConfig, endorsedAt); err != nil {
+			e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+			return nil, nil, nil, err
 		}
 	}
 
-	// set version of executing chaincode
-	if isSysCC {
-		// if we want to allow mixed fabric levels we should
-		// set syscc version to ""
-		// 获取系统链码版本
-		ccid.Version = util.GetSysCCVersion()
-	} else {
-		// 获取用户链码版本
-		ccid.Version = cd.CCVersion()
+	pubSimResBytes, err := simResult.GetPubSimulationBytes()
+	if err != nil {
+		e.Metrics.SimulationFailure.With(meterLabels...).Add(1)
+		return nil, nil, nil, err
 	}
 
-	ctx := Context{
-		PluginName:     escc,
-		Channel:        chainID,
-		SignedProposal: signedProp,
-		ChaincodeID:    ccid,
-		Event:          eventBytes,
-		SimRes:         simRes,
-		Response:       response,
-		Visibility:     visibility,
-		Proposal:       proposal,
-		TxID:           txid,
-	}
-	// 背书
-	return e.s.EndorseWithPlugin(ctx)
+	return res, pubSimResBytes, ccevent, nil
 }
 
 // preProcess checks the tx proposal headers, uniqueness and ACL
-func (e *Endorser) preProcess(signedProp *pb.SignedProposal) (*validateResult, error) {
-	// 定义一个验证结果的结构体
-	vr := &validateResult{}
+func (e *Endorser) preProcess(up *UnpackedProposal, channel *Channel) error {
 	// at first, we check whether the message is valid
-	// 验证信息是否有效
-	prop, hdr, hdrExt, err := validation.ValidateProposalMessage(signedProp)
 
+	err := up.Validate(channel.IdentityDeserializer)
 	if err != nil {
 		e.Metrics.ProposalValidationFailed.Add(1)
-		vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
-		return vr, err
-	}
-	// 从提案的Header中获取通道Header信息
-	chdr, err := putils.UnmarshalChannelHeader(hdr.ChannelHeader)
-	if err != nil {
-		vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
-		return vr, err
-	}
-	//获取签名域的Header
-	shdr, err := putils.GetSignatureHeader(hdr.SignatureHeader)
-	if err != nil {
-		vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
-		return vr, err
+		return errors.WithMessage(err, "error validating proposal")
 	}
 
-	// block invocations to security-sensitive system chaincodes
-	if e.s.IsSysCCAndNotInvokableExternal(hdrExt.ChaincodeId.Name) {
-		endorserLogger.Errorf("Error: an attempt was made by %#v to invoke system chaincode %s", shdr.Creator, hdrExt.ChaincodeId.Name)
-		err = errors.Errorf("chaincode %s cannot be invoked through a proposal", hdrExt.ChaincodeId.Name)
-		vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
-		return vr, err
-	}
-
-	chainID := chdr.ChannelId
-	txid := chdr.TxId
-	endorserLogger.Debugf("[%s][%s] processing txid: %s", chainID, shorttxid(txid), txid)
-
-	if chainID != "" {
-		// labels that provide context for failure metrics
-		meterLabels := []string{
-			"channel", chainID,
-			"chaincode", hdrExt.ChaincodeId.Name + ":" + hdrExt.ChaincodeId.Version,
-		}
-
-		// Here we handle uniqueness check and ACLs for proposals targeting a chain
-		// Notice that ValidateProposalMessage has already verified that TxID is computed properly
-		if _, err = e.s.GetTransactionByID(chainID, txid); err == nil {
-			// increment failure due to duplicate transactions. Useful for catching replay attacks in
-			// addition to benign retries
-			e.Metrics.DuplicateTxsFailure.With(meterLabels...).Add(1)
-			err = errors.Errorf("duplicate transaction found [%s]. Creator [%x]", txid, shdr.Creator)
-			vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
-			return vr, err
-		}
-
-		// check ACL only for application chaincodes; ACLs
-		// for system chaincodes are checked elsewhere
-		if !e.s.IsSysCC(hdrExt.ChaincodeId.Name) {
-			// check that the proposal complies with the Channel's writers
-			if err = e.s.CheckACL(signedProp, chdr, shdr, hdrExt); err != nil {
-				e.Metrics.ProposalACLCheckFailed.With(meterLabels...).Add(1)
-				vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
-				return vr, err
-			}
-		}
-	} else {
+	if up.ChannelHeader.ChannelId == "" {
 		// chainless proposals do not/cannot affect ledger and cannot be submitted as transactions
 		// ignore uniqueness checks; also, chainless proposals are not validated using the policies
 		// of the chain since by definition there is no chain; they are validated against the local
-		// MSP of the peer instead by the call to ValidateProposalMessage above
+		// MSP of the peer instead by the call to ValidateUnpackProposal above
+		return nil
 	}
 
-	vr.prop, vr.hdrExt, vr.chainID, vr.txid = prop, hdrExt, chainID, txid
-	return vr, nil
+	// labels that provide context for failure metrics
+	meterLabels := []string{
+		"channel", up.ChannelHeader.ChannelId,
+		"chaincode", up.ChaincodeName,
+	}
+
+	// Here we handle uniqueness check and ACLs for proposals targeting a chain
+	// Notice that ValidateProposalMessage has already verified that TxID is computed properly
+	if _, err = e.Support.GetTransactionByID(up.ChannelHeader.ChannelId, up.ChannelHeader.TxId); err == nil {
+		// increment failure due to duplicate transactions. Useful for catching replay attacks in
+		// addition to benign retries
+		e.Metrics.DuplicateTxsFailure.With(meterLabels...).Add(1)
+		return errors.Errorf("duplicate transaction found [%s]. Creator [%x]", up.ChannelHeader.TxId, up.SignatureHeader.Creator)
+	}
+
+	// check ACL only for application chaincodes; ACLs
+	// for system chaincodes are checked elsewhere
+	if !e.Support.IsSysCC(up.ChaincodeName) {
+		// check that the proposal complies with the Channel's writers
+		if err = e.Support.CheckACL(up.ChannelHeader.ChannelId, up.SignedProposal); err != nil {
+			e.Metrics.ProposalACLCheckFailed.With(meterLabels...).Add(1)
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ProcessProposal process the Proposal
 func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedProposal) (*pb.ProposalResponse, error) {
 	// start time for computing elapsed time metric for successfully endorsed proposals
-	// 首先获取Peer节点处理提案开始的时间
 	startTime := time.Now()
-	// Peer节点接收到的提案数+1
 	e.Metrics.ProposalsReceived.Add(1)
-	// 从上下文中获取发起提案的地址
+
 	addr := util.ExtractRemoteAddress(ctx)
-	// 日志输出
-	endorserLogger.Debug("Entering: request from", addr)
+	endorserLogger.Debug("request from", addr)
 
 	// variables to capture proposal duration metric
-	// 这个不是链码ID，是通道ID
-	var chainID string
-	var hdrExt *pb.ChaincodeHeaderExtension
-	var success bool
-	// 这个会在方法结束的时候调用
-	defer func() {
-		// capture proposal duration metric. hdrExt == nil indicates early failure
-		// where we don't capture latency metric. But the ProposalValidationFailed
-		// counter metric should shed light on those failures.
-		// 判断chaincodeHeaderExtension是否为空，如果为空的话提案验证失败
-		if hdrExt != nil {
-			meterLabels := []string{
-				"channel", chainID,
-				"chaincode", hdrExt.ChaincodeId.Name + ":" + hdrExt.ChaincodeId.Version,
-				"success", strconv.FormatBool(success),
-			}
-			e.Metrics.ProposalDuration.With(meterLabels...).Observe(time.Since(startTime).Seconds())
-		}
+	success := false
 
-		endorserLogger.Debug("Exit: request from", addr)
-	}()
-
-	// 0 -- check and validate
-	// 到了第一个重要的方法，对已签名的提案进行预处理，点进行看一下
-	vr, err := e.preProcess(signedProp)
+	up, err := UnpackProposal(signedProp)
 	if err != nil {
-		resp := vr.resp
-		return resp, err
+		e.Metrics.ProposalValidationFailed.Add(1)
+		return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, err
 	}
 
-	prop, hdrExt, chainID, txid := vr.prop, vr.hdrExt, vr.chainID, vr.txid
+	var channel *Channel
+	if up.ChannelID() != "" {
+		channel = e.ChannelFetcher.Channel(up.ChannelID())
+		if channel == nil {
+			return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: fmt.Sprintf("channel '%s' not found", up.ChannelHeader.ChannelId)}}, nil
+		}
+	} else {
+		channel = &Channel{
+			IdentityDeserializer: e.LocalMSP,
+		}
+	}
 
-	// obtaining once the tx simulator for this proposal. This will be nil
-	// for chainless proposals
-	// Also obtain a history query executor for history queries, since tx simulator does not cover history
-	// 这里定义了一个Tx模拟器，用于后面的模拟交易过程,如果通道Id为空，那么TxSimulator也是空
-	var txsim ledger.TxSimulator
-	// 定义一个历史记录查询器
-	var historyQueryExecutor ledger.HistoryQueryExecutor
-	// 判断是否需要Tx模拟
-	if acquireTxSimulator(chainID, vr.hdrExt.ChaincodeId) {
-		// 根据通道ID获取Tx模拟器
-		if txsim, err = e.s.GetTxSimulator(chainID, txid); err != nil {
-			return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
+	// 0 -- check and validate
+	err = e.preProcess(up, channel)
+	if err != nil {
+		return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, err
+	}
+
+	defer func() {
+		meterLabels := []string{
+			"channel", up.ChannelHeader.ChannelId,
+			"chaincode", up.ChaincodeName,
+			"success", strconv.FormatBool(success),
+		}
+		e.Metrics.ProposalDuration.With(meterLabels...).Observe(time.Since(startTime).Seconds())
+	}()
+
+	pResp, err := e.ProcessProposalSuccessfullyOrError(up)
+	if err != nil {
+		return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
+	}
+
+	if pResp.Endorsement != nil || up.ChannelHeader.ChannelId == "" {
+		// We mark the tx as successful only if it was successfully endorsed, or
+		// if it was a system chaincode on a channel-less channel and therefore
+		// cannot be endorsed.
+		success = true
+
+		// total failed proposals = ProposalsReceived-SuccessfulProposals
+		e.Metrics.SuccessfulProposals.Add(1)
+	}
+	return pResp, nil
+}
+
+func (e *Endorser) ProcessProposalSuccessfullyOrError(up *UnpackedProposal) (*pb.ProposalResponse, error) {
+	txParams := &ccprovider.TransactionParams{
+		ChannelID:  up.ChannelHeader.ChannelId,
+		TxID:       up.ChannelHeader.TxId,
+		SignedProp: up.SignedProposal,
+		Proposal:   up.Proposal,
+	}
+
+	logger := decorateLogger(endorserLogger, txParams)
+
+	if acquireTxSimulator(up.ChannelHeader.ChannelId, up.ChaincodeName) {
+		txSim, err := e.Support.GetTxSimulator(up.ChannelID(), up.TxID())
+		if err != nil {
+			return nil, err
 		}
 
 		// txsim acquires a shared lock on the stateDB. As this would impact the block commits (i.e., commit
@@ -502,102 +377,93 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 		// add the following defer statement and is useful when an error occur. Note that calling
 		// txsim.Done() more than once does not cause any issue. If the txsim is already
 		// released, the following txsim.Done() simply returns.
-		defer txsim.Done()
-		// 获取历史记录查询器
-		if historyQueryExecutor, err = e.s.GetHistoryQueryExecutor(chainID); err != nil {
-			return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
-		}
-	}
-	// 定义一个交易参数结构体，用于下面的方法,里面的字段之前都有说过
-	txParams := &ccprovider.TransactionParams{
-		ChannelID:            chainID,
-		TxID:                 txid,
-		SignedProp:           signedProp,
-		Proposal:             prop,
-		TXSimulator:          txsim,
-		HistoryQueryExecutor: historyQueryExecutor,
-	}
-	// this could be a request to a chainless SysCC
+		defer txSim.Done()
 
-	// TODO: if the proposal has an extension, it will be of type ChaincodeAction;
-	//       if it's present it means that no simulation is to be performed because
-	//       we're trying to emulate a submitting peer. On the other hand, we need
-	//       to validate the supplied action before endorsing it
+		hqe, err := e.Support.GetHistoryQueryExecutor(up.ChannelID())
+		if err != nil {
+			return nil, err
+		}
+
+		txParams.TXSimulator = txSim
+		txParams.HistoryQueryExecutor = hqe
+	}
+
+	cdLedger, err := e.Support.ChaincodeEndorsementInfo(up.ChannelID(), up.ChaincodeName, txParams.TXSimulator)
+	if err != nil {
+		return nil, errors.WithMessagef(err, "make sure the chaincode %s has been successfully defined on channel %s and try again", up.ChaincodeName, up.ChannelID())
+	}
 
 	// 1 -- simulate
-	// 对交易进行模拟
-	cd, res, simulationResult, ccevent, err := e.SimulateProposal(txParams, hdrExt.ChaincodeId)
+	res, simulationResult, ccevent, err := e.SimulateProposal(txParams, up.ChaincodeName, up.Input)
 	if err != nil {
-		return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
-	}
-	if res != nil {
-		if res.Status >= shim.ERROR {
-			endorserLogger.Errorf("[%s][%s] simulateProposal() resulted in chaincode %s response status %d for txid: %s", chainID, shorttxid(txid), hdrExt.ChaincodeId, res.Status, txid)
-			var cceventBytes []byte
-			if ccevent != nil {
-				cceventBytes, err = putils.GetBytesChaincodeEvent(ccevent)
-				if err != nil {
-					return nil, errors.Wrap(err, "failed to marshal event bytes")
-				}
-			}
-			pResp, err := putils.CreateProposalResponseFailure(prop.Header, prop.Payload, res, simulationResult, cceventBytes, hdrExt.ChaincodeId, hdrExt.PayloadVisibility)
-			if err != nil {
-				return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
-			}
-
-			return pResp, nil
-		}
+		return nil, errors.WithMessage(err, "error in simulation")
 	}
 
-	// 2 -- endorse and get a marshalled ProposalResponse message
-	var pResp *pb.ProposalResponse
-
-	// TODO till we implement global ESCC, CSCC for system chaincodes
-	// chainless proposals (such as CSCC) don't have to be endorsed
-	if chainID == "" {
-		pResp = &pb.ProposalResponse{Response: res}
-	} else {
-		// Note: To endorseProposal(), we pass the released txsim. Hence, an error would occur if we try to use this txsim
-		// 开始背书
-		pResp, err = e.endorseProposal(ctx, chainID, txid, signedProp, prop, res, simulationResult, ccevent, hdrExt.PayloadVisibility, hdrExt.ChaincodeId, txsim, cd)
-
-		// if error, capture endorsement failure metric
-		meterLabels := []string{
-			"channel", chainID,
-			"chaincode", hdrExt.ChaincodeId.Name + ":" + hdrExt.ChaincodeId.Version,
-		}
-
-		if err != nil {
-			meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(false))
-			e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
-			return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, nil
-		}
-		if pResp.Response.Status >= shim.ERRORTHRESHOLD {
-			// the default ESCC treats all status codes about threshold as errors and fails endorsement
-			// useful to track this as a separate metric
-			meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(true))
-			e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
-			endorserLogger.Debugf("[%s][%s] endorseProposal() resulted in chaincode %s error for txid: %s", chainID, shorttxid(txid), hdrExt.ChaincodeId, txid)
-			return pResp, nil
-		}
+	cceventBytes, err := CreateCCEventBytes(ccevent)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal chaincode event")
 	}
 
-	// Set the proposal response payload - it
-	// contains the "return value" from the
-	// chaincode invocation
-	pResp.Response = res
+	prpBytes, err := protoutil.GetBytesProposalResponsePayload(up.ProposalHash, res, simulationResult, cceventBytes, &pb.ChaincodeID{
+		Name:    up.ChaincodeName,
+		Version: cdLedger.Version,
+	})
+	if err != nil {
+		logger.Warning("Failed marshaling the proposal response payload to bytes", err)
+		return nil, errors.WithMessage(err, "failed to create the proposal response")
+	}
 
-	// total failed proposals = ProposalsReceived-SuccessfulProposals
-	e.Metrics.SuccessfulProposals.Add(1)
-	success = true
+	// if error, capture endorsement failure metric
+	meterLabels := []string{
+		"channel", up.ChannelID(),
+		"chaincode", up.ChaincodeName,
+	}
 
-	return pResp, nil
+	switch {
+	case res.Status >= shim.ERROR:
+		return &pb.ProposalResponse{
+			Response: res,
+			Payload:  prpBytes,
+		}, nil
+	case up.ChannelID() == "":
+		// Chaincode invocations without a channel ID is a broken concept
+		// that should be removed in the future.  For now, return unendorsed
+		// success.
+		return &pb.ProposalResponse{
+			Response: res,
+		}, nil
+	case res.Status >= shim.ERRORTHRESHOLD:
+		meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(true))
+		e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
+		logger.Debugf("chaincode error %d", res.Status)
+		return &pb.ProposalResponse{
+			Response: res,
+		}, nil
+	}
+
+	escc := cdLedger.EndorsementPlugin
+
+	logger.Debugf("escc for chaincode %s is %s", up.ChaincodeName, escc)
+
+	// Note, mPrpBytes is the same as prpBytes by default endorsement plugin, but others could change it.
+	endorsement, mPrpBytes, err := e.Support.EndorseWithPlugin(escc, up.ChannelID(), prpBytes, up.SignedProposal)
+	if err != nil {
+		meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(false))
+		e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
+		return nil, errors.WithMessage(err, "endorsing with plugin failed")
+	}
+
+	return &pb.ProposalResponse{
+		Version:     1,
+		Endorsement: endorsement,
+		Payload:     mPrpBytes,
+		Response:    res,
+	}, nil
 }
 
 // determine whether or not a transaction simulator should be
 // obtained for a proposal.
-func acquireTxSimulator(chainID string, ccid *pb.ChaincodeID) bool {
-	// 如果通道ID为空,就说明不需要进行Tx的模拟
+func acquireTxSimulator(chainID string, chaincodeName string) bool {
 	if chainID == "" {
 		return false
 	}
@@ -605,8 +471,7 @@ func acquireTxSimulator(chainID string, ccid *pb.ChaincodeID) bool {
 	// ¯\_(ツ)_/¯ locking.
 	// Don't get a simulator for the query and config system chaincode.
 	// These don't need the simulator and its read lock results in deadlocks.
-	// 通道ID不为空，则判断链码的类型，如果是qscc(查询系统链码),cscc(配置系统链码)，则不需要进行Tx模拟
-	switch ccid.Name {
+	switch chaincodeName {
 	case "qscc", "cscc":
 		return false
 	default:
@@ -622,4 +487,16 @@ func shorttxid(txid string) string {
 		return txid
 	}
 	return txid[0:8]
+}
+
+func CreateCCEventBytes(ccevent *pb.ChaincodeEvent) ([]byte, error) {
+	if ccevent == nil {
+		return nil, nil
+	}
+
+	return proto.Marshal(ccevent)
+}
+
+func decorateLogger(logger *flogging.FabricLogger, txParams *ccprovider.TransactionParams) *flogging.FabricLogger {
+	return logger.With("channel", txParams.ChannelID, "txID", shorttxid(txParams.TxID))
 }

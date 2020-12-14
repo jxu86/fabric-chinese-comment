@@ -7,39 +7,64 @@ SPDX-License-Identifier: Apache-2.0
 package pvtdatastorage
 
 import (
+	"io/ioutil"
 	"os"
 	"testing"
+	"time"
 
-	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
+	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/pvtdatapolicy"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func pvtDataConf() *PrivateDataConfig {
+	return &PrivateDataConfig{
+		PrivateDataConfig: &ledger.PrivateDataConfig{
+			BatchesInterval:                     1000,
+			MaxBatchSize:                        5000,
+			PurgeInterval:                       2,
+			DeprioritizedDataReconcilerInterval: 120 * time.Minute,
+		},
+		StorePath: "",
+	}
+}
 
 // StoreEnv provides the  store env for testing
 type StoreEnv struct {
 	t                 testing.TB
-	TestStoreProvider Provider
-	TestStore         Store
+	TestStoreProvider *Provider
+	TestStore         *Store
 	ledgerid          string
 	btlPolicy         pvtdatapolicy.BTLPolicy
+	conf              *PrivateDataConfig
 }
 
 // NewTestStoreEnv construct a StoreEnv for testing
-func NewTestStoreEnv(t *testing.T, ledgerid string, btlPolicy pvtdatapolicy.BTLPolicy) *StoreEnv {
-	removeStorePath(t)
-	assert := assert.New(t)
-	testStoreProvider := NewProvider()
+func NewTestStoreEnv(
+	t *testing.T,
+	ledgerid string,
+	btlPolicy pvtdatapolicy.BTLPolicy,
+	conf *PrivateDataConfig) *StoreEnv {
+	storeDir, err := ioutil.TempDir("", "pdstore")
+	if err != nil {
+		t.Fatalf("Failed to create private data storage directory: %s", err)
+	}
+	conf.StorePath = storeDir
+	testStoreProvider, err := NewProvider(conf)
+	require.NoError(t, err)
 	testStore, err := testStoreProvider.OpenStore(ledgerid)
 	testStore.Init(btlPolicy)
-	assert.NoError(err)
-	return &StoreEnv{t, testStoreProvider, testStore, ledgerid, btlPolicy}
+	require.NoError(t, err)
+	return &StoreEnv{t, testStoreProvider, testStore, ledgerid, btlPolicy, conf}
 }
 
 // CloseAndReopen closes and opens the store provider
 func (env *StoreEnv) CloseAndReopen() {
 	var err error
 	env.TestStoreProvider.Close()
-	env.TestStoreProvider = NewProvider()
+	env.TestStoreProvider, err = NewProvider(env.conf)
+	assert.NoError(env.t, err)
 	env.TestStore, err = env.TestStoreProvider.OpenStore(env.ledgerid)
 	env.TestStore.Init(env.btlPolicy)
 	assert.NoError(env.t, err)
@@ -47,14 +72,9 @@ func (env *StoreEnv) CloseAndReopen() {
 
 // Cleanup cleansup the  store env after testing
 func (env *StoreEnv) Cleanup() {
-	//env.TestStoreProvider.Close()
-	removeStorePath(env.t)
-}
-
-func removeStorePath(t testing.TB) {
-	dbPath := ledgerconfig.GetPvtdataStorePath()
-	if err := os.RemoveAll(dbPath); err != nil {
-		t.Fatalf("Err: %s", err)
-		t.FailNow()
+	env.TestStoreProvider.Close()
+	env.TestStore.db.Close()
+	if err := os.RemoveAll(env.conf.StorePath); err != nil {
+		env.t.Errorf("error while removing path %s, %v", env.conf.StorePath, err)
 	}
 }

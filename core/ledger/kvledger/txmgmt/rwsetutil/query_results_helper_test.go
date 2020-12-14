@@ -1,45 +1,45 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package rwsetutil
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"testing"
 
 	"github.com/golang/protobuf/proto"
-	bccspfactory "github.com/hyperledger/fabric/bccsp/factory"
-	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
-	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
-	"github.com/stretchr/testify/assert"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
+	"github.com/hyperledger/fabric/core/ledger/internal/version"
+	"github.com/stretchr/testify/require"
+)
+
+var (
+	testHashFunc = func(data []byte) ([]byte, error) {
+		h := sha256.New()
+		if _, err := h.Write(data); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
 )
 
 func TestQueryResultHelper_NoResults(t *testing.T) {
-	helper, _ := NewRangeQueryResultsHelper(true, 3)
+	helper, _ := NewRangeQueryResultsHelper(true, 3, testHashFunc)
 	r, h, err := helper.Done()
-	assert.NoError(t, err)
-	assert.Nil(t, h)
-	assert.Nil(t, r)
+	require.NoError(t, err)
+	require.Nil(t, h)
+	require.Nil(t, r)
 }
 
 func TestQueryResultHelper_HashNotEnabled(t *testing.T) {
 	kvReads := buildTestKVReads(t, 5)
 	r, h := buildTestResults(t, false, 3, kvReads)
-	assert.Nil(t, h)
-	assert.Equal(t, kvReads, r)
+	require.Nil(t, h)
+	require.Equal(t, kvReads, r)
 }
 
 func TestQueryResultHelper_ResultsNoMoreThanMaxDegree(t *testing.T) {
@@ -47,8 +47,8 @@ func TestQueryResultHelper_ResultsNoMoreThanMaxDegree(t *testing.T) {
 	numResults := 3
 	kvReads := buildTestKVReads(t, numResults)
 	r, h := buildTestResults(t, true, maxDegree, kvReads)
-	assert.Nil(t, h)
-	assert.Equal(t, kvReads, r)
+	require.Nil(t, h)
+	require.Equal(t, kvReads, r)
 }
 
 func TestQueryResultHelper_Hash_OneLevel(t *testing.T) {
@@ -58,8 +58,8 @@ func TestQueryResultHelper_Hash_OneLevel(t *testing.T) {
 	level1_1 := computeTestHashKVReads(t, kvReads[0:4])
 	level1_2 := computeTestHashKVReads(t, kvReads[4:8])
 	level1_3 := computeTestHashKVReads(t, kvReads[8:])
-	assert.Nil(t, r)
-	assert.Equal(t, &kvrwset.QueryReadsMerkleSummary{
+	require.Nil(t, r)
+	require.Equal(t, &kvrwset.QueryReadsMerkleSummary{
 		MaxDegree:      uint32(maxDegree),
 		MaxLevel:       1,
 		MaxLevelHashes: hashesToBytes([]Hash{level1_1, level1_2, level1_3})}, h)
@@ -80,8 +80,8 @@ func TestQueryResultHelper_Hash_TwoLevel(t *testing.T) {
 
 	level2_1 := computeTestCombinedHash(t, level1_1, level1_2, level1_3, level1_4)
 	level2_2 := computeTestCombinedHash(t, level1_5, level1_6, level1_7)
-	assert.Nil(t, r)
-	assert.Equal(t, &kvrwset.QueryReadsMerkleSummary{
+	require.Nil(t, r)
+	require.Equal(t, &kvrwset.QueryReadsMerkleSummary{
 		MaxDegree:      uint32(maxDegree),
 		MaxLevel:       2,
 		MaxLevelHashes: hashesToBytes([]Hash{level2_1, level2_2})}, h)
@@ -117,8 +117,8 @@ func TestQueryResultHelper_Hash_ThreeLevel(t *testing.T) {
 
 	level3_1 := computeTestCombinedHash(t, level2_1, level2_2, level2_3, level2_4)
 	level3_2 := level1_17
-	assert.Nil(t, r)
-	assert.Equal(t, &kvrwset.QueryReadsMerkleSummary{
+	require.Nil(t, r)
+	require.Equal(t, &kvrwset.QueryReadsMerkleSummary{
 		MaxDegree:      uint32(maxDegree),
 		MaxLevel:       3,
 		MaxLevelHashes: hashesToBytes([]Hash{level3_1, level3_2})}, h)
@@ -144,8 +144,8 @@ func TestQueryResultHelper_Hash_MaxLevelIncrementNeededInDone(t *testing.T) {
 
 	level3_1 := computeTestCombinedHash(t, level2_1, level2_2, level2_3)
 
-	assert.Nil(t, r)
-	assert.Equal(t, &kvrwset.QueryReadsMerkleSummary{
+	require.Nil(t, r)
+	require.Equal(t, &kvrwset.QueryReadsMerkleSummary{
 		MaxDegree:      uint32(maxDegree),
 		MaxLevel:       3,
 		MaxLevelHashes: hashesToBytes([]Hash{level3_1})}, h)
@@ -181,8 +181,8 @@ func TestQueryResultHelper_Hash_FirstLevelSkipNeededInDone(t *testing.T) {
 	level3_1 := computeTestCombinedHash(t, level2_1, level2_2, level2_3)
 	level3_2 := computeTestCombinedHash(t, level2_4, level2_5)
 
-	assert.Nil(t, r)
-	assert.Equal(t, &kvrwset.QueryReadsMerkleSummary{
+	require.Nil(t, r)
+	require.Equal(t, &kvrwset.QueryReadsMerkleSummary{
 		MaxDegree:      uint32(maxDegree),
 		MaxLevel:       3,
 		MaxLevelHashes: hashesToBytes([]Hash{level3_1, level3_2})}, h)
@@ -190,12 +190,12 @@ func TestQueryResultHelper_Hash_FirstLevelSkipNeededInDone(t *testing.T) {
 }
 
 func buildTestResults(t *testing.T, enableHashing bool, maxDegree int, kvReads []*kvrwset.KVRead) ([]*kvrwset.KVRead, *kvrwset.QueryReadsMerkleSummary) {
-	helper, _ := NewRangeQueryResultsHelper(enableHashing, uint32(maxDegree))
+	helper, _ := NewRangeQueryResultsHelper(enableHashing, uint32(maxDegree), testHashFunc)
 	for _, kvRead := range kvReads {
 		helper.AddResult(kvRead)
 	}
 	r, h, err := helper.Done()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	return r, h
 }
 
@@ -211,14 +211,14 @@ func computeTestHashKVReads(t *testing.T, kvReads []*kvrwset.KVRead) Hash {
 	queryReads := &kvrwset.QueryReads{}
 	queryReads.KvReads = kvReads
 	b, err := proto.Marshal(queryReads)
-	assert.NoError(t, err)
-	h, err := bccspfactory.GetDefault().Hash(b, hashOpts)
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	h, err := testHashFunc(b)
+	require.NoError(t, err)
 	return h
 }
 
 func computeTestCombinedHash(t *testing.T, hashes ...Hash) Hash {
-	h, err := computeCombinedHash(hashes)
-	assert.NoError(t, err)
+	h, err := computeCombinedHash(hashes, testHashFunc)
+	require.NoError(t, err)
 	return h
 }

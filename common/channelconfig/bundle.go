@@ -7,13 +7,14 @@ SPDX-License-Identifier: Apache-2.0
 package channelconfig
 
 import (
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/msp"
-	cb "github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
@@ -154,8 +155,8 @@ func (b *Bundle) ValidateNew(nb Resources) error {
 
 // NewBundleFromEnvelope wraps the NewBundle function, extracting the needed
 // information from a full configtx
-func NewBundleFromEnvelope(env *cb.Envelope) (*Bundle, error) {
-	payload, err := utils.UnmarshalPayload(env.Payload)
+func NewBundleFromEnvelope(env *cb.Envelope, bccsp bccsp.BCCSP) (*Bundle, error) {
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal payload from envelope")
 	}
@@ -169,21 +170,21 @@ func NewBundleFromEnvelope(env *cb.Envelope) (*Bundle, error) {
 		return nil, errors.Errorf("envelope header cannot be nil")
 	}
 
-	chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
+	chdr, err := protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal channel header")
 	}
 
-	return NewBundle(chdr.ChannelId, configEnvelope.Config)
+	return NewBundle(chdr.ChannelId, configEnvelope.Config, bccsp)
 }
 
 // NewBundle creates a new immutable bundle of configuration
-func NewBundle(channelID string, config *cb.Config) (*Bundle, error) {
+func NewBundle(channelID string, config *cb.Config, bccsp bccsp.BCCSP) (*Bundle, error) {
 	if err := preValidate(config); err != nil {
 		return nil, err
 	}
 
-	channelConfig, err := NewChannelConfig(config.ChannelGroup)
+	channelConfig, err := NewChannelConfig(config.ChannelGroup, bccsp)
 	if err != nil {
 		return nil, errors.Wrap(err, "initializing channelconfig failed")
 	}

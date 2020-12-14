@@ -7,21 +7,20 @@ SPDX-License-Identifier: Apache-2.0
 package statedb
 
 import (
-	"fmt"
 	"sort"
 
-	"github.com/hyperledger/fabric/core/common/ccprovider"
-	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
+	"github.com/hyperledger/fabric/core/ledger/internal/version"
 	"github.com/hyperledger/fabric/core/ledger/util"
 )
 
 //go:generate counterfeiter -o mock/results_iterator.go -fake-name ResultsIterator . ResultsIterator
 //go:generate counterfeiter -o mock/versioned_db.go -fake-name VersionedDB . VersionedDB
+//go:generate counterfeiter -o mock/namespace_provider.go -fake-name NamespaceProvider . NamespaceProvider
 
 // VersionedDBProvider provides an instance of an versioned DB
 type VersionedDBProvider interface {
 	// GetDBHandle returns a handle to a VersionedDB
-	GetDBHandle(id string) (VersionedDB, error)
+	GetDBHandle(id string, namespaceProvider NamespaceProvider) (VersionedDB, error)
 	// Close closes all the VersionedDB instances and releases any resources held by VersionedDBProvider
 	Close()
 }
@@ -39,18 +38,18 @@ type VersionedDB interface {
 	// endKey is exclusive
 	// The returned ResultsIterator contains results of type *VersionedKV
 	GetStateRangeScanIterator(namespace string, startKey string, endKey string) (ResultsIterator, error)
-	// GetStateRangeScanIteratorWithMetadata returns an iterator that contains all the key-values between given key ranges.
+	// GetStateRangeScanIteratorWithPagination returns an iterator that contains all the key-values between given key ranges.
 	// startKey is inclusive
 	// endKey is exclusive
-	// metadata is a map of additional query parameters
+	// pageSize parameter limits the number of returned results
 	// The returned ResultsIterator contains results of type *VersionedKV
-	GetStateRangeScanIteratorWithMetadata(namespace string, startKey string, endKey string, metadata map[string]interface{}) (QueryResultsIterator, error)
+	GetStateRangeScanIteratorWithPagination(namespace string, startKey string, endKey string, pageSize int32) (QueryResultsIterator, error)
 	// ExecuteQuery executes the given query and returns an iterator that contains results of type *VersionedKV.
 	ExecuteQuery(namespace, query string) (ResultsIterator, error)
-	// ExecuteQueryWithMetadata executes the given query with associated query options and
+	// ExecuteQueryWithPagination executes the given query and
 	// returns an iterator that contains results of type *VersionedKV.
-	// metadata is a map of additional query parameters
-	ExecuteQueryWithMetadata(namespace, query string, metadata map[string]interface{}) (QueryResultsIterator, error)
+	// The bookmark and page size parameters are associated with the pagination query.
+	ExecuteQueryWithPagination(namespace, query, bookmark string, pageSize int32) (QueryResultsIterator, error)
 	// ApplyUpdates applies the batch to the underlying db.
 	// height is the height of the highest transaction in the Batch that
 	// a state db implementation is expected to ues as a save point
@@ -67,10 +66,26 @@ type VersionedDB interface {
 	// BytesKeySupported returns true if the implementation (underlying db) supports the any bytes to be used as key.
 	// For instance, leveldb supports any bytes for the key while the couchdb supports only valid utf-8 string
 	BytesKeySupported() bool
+	// GetFullScanIterator returns a FullScanIterator that can be used to iterate over entire data in the statedb.
+	// `skipNamespace` parameter can be used to control if the consumer wants the FullScanIterator
+	// to skip one or more namespaces from the returned results. The second parameter returns the format information
+	// about the value bytes returned by the Next function in the returned FullScanIterator.
+	// The intended use of this iterator is to generate the snapshot files for the statedb.
+	GetFullScanIterator(skipNamespace func(string) bool) (FullScanIterator, byte, error)
 	// Open opens the db
 	Open() error
 	// Close closes the db
 	Close()
+}
+
+// NamespaceProvider provides a mean for statedb to get all the possible namespaces for a channel.
+// The intended use is for statecouchdb to retroactively build channel metadata when it is missing,
+// e.g., when opening a statecouchdb from v2.0/2.1 version.
+type NamespaceProvider interface {
+	// PossibleNamespaces returns all possible namespaces for the statedb. Note that it is a superset
+	// of the actual namespaces. Therefore, the caller should compare with the existing databases to
+	// filter out the namespaces that have no matched databases.
+	PossibleNamespaces(vdb VersionedDB) ([]string, error)
 }
 
 //BulkOptimizable interface provides additional functions for
@@ -85,7 +100,17 @@ type BulkOptimizable interface {
 //databases capable of index operations
 type IndexCapable interface {
 	GetDBType() string
-	ProcessIndexesForChaincodeDeploy(namespace string, fileEntries []*ccprovider.TarFileEntry) error
+	ProcessIndexesForChaincodeDeploy(namespace string, indexFilesData map[string][]byte) error
+}
+
+// FullScanIterator provides a mean to iterate over entire statedb. The intended use of this iterator
+// is to generate the snapshot files for the statedb
+type FullScanIterator interface {
+	// Next returns the key-values in the lexical order of <Namespace, key>
+	// A particular statedb implementation is free to chose any deterministic bytes representation for the <version, value, metadata>
+	Next() (*CompositeKey, []byte, error)
+	// Close releases any resources held with the implementation
+	Close()
 }
 
 // CompositeKey encloses Namespace and Key components
@@ -128,7 +153,7 @@ type QueryResultsIterator interface {
 type QueryResult interface{}
 
 type nsUpdates struct {
-	m map[string]*VersionedValue
+	M map[string]*VersionedValue
 }
 
 func newNsUpdates() *nsUpdates {
@@ -137,21 +162,22 @@ func newNsUpdates() *nsUpdates {
 
 // UpdateBatch encloses the details of multiple `updates`
 type UpdateBatch struct {
-	updates map[string]*nsUpdates
+	ContainsPostOrderWrites bool
+	Updates                 map[string]*nsUpdates
 }
 
 // NewUpdateBatch constructs an instance of a Batch
 func NewUpdateBatch() *UpdateBatch {
-	return &UpdateBatch{make(map[string]*nsUpdates)}
+	return &UpdateBatch{false, make(map[string]*nsUpdates)}
 }
 
 // Get returns the VersionedValue for the given namespace and key
 func (batch *UpdateBatch) Get(ns string, key string) *VersionedValue {
-	nsUpdates, ok := batch.updates[ns]
+	nsUpdates, ok := batch.Updates[ns]
 	if !ok {
 		return nil
 	}
-	vv, ok := nsUpdates.m[key]
+	vv, ok := nsUpdates.M[key]
 	if !ok {
 		return nil
 	}
@@ -179,19 +205,19 @@ func (batch *UpdateBatch) Delete(ns string, key string, version *version.Height)
 
 // Exists checks whether the given key exists in the batch
 func (batch *UpdateBatch) Exists(ns string, key string) bool {
-	nsUpdates, ok := batch.updates[ns]
+	nsUpdates, ok := batch.Updates[ns]
 	if !ok {
 		return false
 	}
-	_, ok = nsUpdates.m[key]
+	_, ok = nsUpdates.M[key]
 	return ok
 }
 
 // GetUpdatedNamespaces returns the names of the namespaces that are updated
 func (batch *UpdateBatch) GetUpdatedNamespaces() []string {
-	namespaces := make([]string, len(batch.updates))
+	namespaces := make([]string, len(batch.Updates))
 	i := 0
-	for ns := range batch.updates {
+	for ns := range batch.Updates {
 		namespaces[i] = ns
 		i++
 	}
@@ -200,16 +226,16 @@ func (batch *UpdateBatch) GetUpdatedNamespaces() []string {
 
 // Update updates the batch with a latest entry for a namespace and a key
 func (batch *UpdateBatch) Update(ns string, key string, vv *VersionedValue) {
-	batch.getOrCreateNsUpdates(ns).m[key] = vv
+	batch.getOrCreateNsUpdates(ns).M[key] = vv
 }
 
 // GetUpdates returns all the updates for a namespace
 func (batch *UpdateBatch) GetUpdates(ns string) map[string]*VersionedValue {
-	nsUpdates, ok := batch.updates[ns]
+	nsUpdates, ok := batch.Updates[ns]
 	if !ok {
 		return nil
 	}
-	return nsUpdates.m
+	return nsUpdates.M
 }
 
 // GetRangeScanIterator returns an iterator that iterates over keys of a specific namespace in sorted order
@@ -223,11 +249,21 @@ func (batch *UpdateBatch) GetRangeScanIterator(ns string, startKey string, endKe
 	return newNsIterator(ns, startKey, endKey, batch)
 }
 
+// Merge merges another updates batch with this updates batch
+func (batch *UpdateBatch) Merge(toMerge *UpdateBatch) {
+	batch.ContainsPostOrderWrites = batch.ContainsPostOrderWrites || toMerge.ContainsPostOrderWrites
+	for ns, nsUpdates := range toMerge.Updates {
+		for key, vv := range nsUpdates.M {
+			batch.Update(ns, key, vv)
+		}
+	}
+}
+
 func (batch *UpdateBatch) getOrCreateNsUpdates(ns string) *nsUpdates {
-	nsUpdates := batch.updates[ns]
+	nsUpdates := batch.Updates[ns]
 	if nsUpdates == nil {
 		nsUpdates = newNsUpdates()
-		batch.updates[ns] = nsUpdates
+		batch.Updates[ns] = nsUpdates
 	}
 	return nsUpdates
 }
@@ -241,11 +277,11 @@ type nsIterator struct {
 }
 
 func newNsIterator(ns string, startKey string, endKey string, batch *UpdateBatch) *nsIterator {
-	nsUpdates, ok := batch.updates[ns]
+	nsUpdates, ok := batch.Updates[ns]
 	if !ok {
 		return &nsIterator{}
 	}
-	sortedKeys := util.GetSortedKeys(nsUpdates.m)
+	sortedKeys := util.GetSortedKeys(nsUpdates.M)
 	var nextIndex int
 	var lastIndex int
 	if startKey == "" {
@@ -267,7 +303,7 @@ func (itr *nsIterator) Next() (QueryResult, error) {
 		return nil, nil
 	}
 	key := itr.sortedKeys[itr.nextIndex]
-	vv := itr.nsUpdates.m[key]
+	vv := itr.nsUpdates.M[key]
 	itr.nextIndex++
 	return &VersionedKV{CompositeKey{itr.ns, key}, VersionedValue{vv.Value, vv.Metadata, vv.Version}}, nil
 }
@@ -281,25 +317,4 @@ func (itr *nsIterator) Close() {
 func (itr *nsIterator) GetBookmarkAndClose() string {
 	// do nothing
 	return ""
-}
-
-const optionLimit = "limit"
-
-// ValidateRangeMetadata validates the JSON containing attributes for the range query
-func ValidateRangeMetadata(metadata map[string]interface{}) error {
-	for key, keyVal := range metadata {
-		switch key {
-
-		case optionLimit:
-			//Verify the pageSize is an integer
-			if _, ok := keyVal.(int32); ok {
-				continue
-			}
-			return fmt.Errorf("Invalid entry, \"limit\" must be a int32")
-
-		default:
-			return fmt.Errorf("Invalid entry, option %s not recognized", key)
-		}
-	}
-	return nil
 }

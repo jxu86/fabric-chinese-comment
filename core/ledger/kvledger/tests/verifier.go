@@ -11,11 +11,12 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/ledger/queryresult"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
+	protopeer "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/core/ledger"
-	lgrutil "github.com/hyperledger/fabric/core/ledger/util"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
-	protopeer "github.com/hyperledger/fabric/protos/peer"
+	"github.com/hyperledger/fabric/internal/pkg/txflags"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -117,6 +118,23 @@ func (v *verifier) verifyTxValidationCode(txid string, expectedCode protopeer.Tx
 	v.assert.Equal(int32(expectedCode), tran.ValidationCode)
 }
 
+func (v *verifier) verifyHistory(ns, key string, expectedVals []string) {
+	hqe, err := v.lgr.NewHistoryQueryExecutor()
+	v.assert.NoError(err)
+	itr, err := hqe.GetHistoryForKey(ns, key)
+	v.assert.NoError(err)
+	historyValues := []string{}
+	for {
+		result, err := itr.Next()
+		v.assert.NoError(err)
+		if result == nil {
+			break
+		}
+		historyValues = append(historyValues, string(result.(*queryresult.KeyModification).GetValue()))
+	}
+	v.assert.Equal(expectedVals, historyValues)
+}
+
 func (v *verifier) verifyCommitHashExists() {
 	bcInfo, err := v.lgr.GetBlockchainInfo()
 	v.assert.NoError(err)
@@ -212,8 +230,7 @@ func (r *retrievedBlockAndPvtdata) sameMetadata(expectedBlock *common.Block) {
 }
 
 func (r *retrievedBlockAndPvtdata) containsValidationCode(txSeq int, validationCode protopeer.TxValidationCode) {
-	var txFilter lgrutil.TxValidationFlags
-	txFilter = r.BlockAndPvtData.Block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER]
+	txFilter := txflags.ValidationFlags(r.BlockAndPvtData.Block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
 	r.assert.Equal(validationCode, txFilter.Flag(txSeq))
 }
 
@@ -228,6 +245,7 @@ func (r *retrievedBlockAndPvtdata) samePvtdata(expectedPvtdata map[uint64]*ledge
 
 func (r *retrievedBlockAndPvtdata) containsCommitHash() {
 	commitHash := &common.Metadata{}
+	spew.Dump(r.Block.Metadata)
 	err := proto.Unmarshal(
 		r.Block.Metadata.Metadata[common.BlockMetadataIndex_COMMIT_HASH],
 		commitHash,

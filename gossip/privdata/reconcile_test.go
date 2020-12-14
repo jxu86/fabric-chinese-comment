@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	gossip2 "github.com/hyperledger/fabric-protos-go/gossip"
+	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	util2 "github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/ledger"
@@ -19,10 +21,9 @@ import (
 	gmetricsmocks "github.com/hyperledger/fabric/gossip/metrics/mocks"
 	privdatacommon "github.com/hyperledger/fabric/gossip/privdata/common"
 	"github.com/hyperledger/fabric/gossip/privdata/mocks"
-	"github.com/hyperledger/fabric/protos/common"
-	gossip2 "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNoItemsToReconcile(t *testing.T) {
@@ -33,16 +34,19 @@ func TestNoItemsToReconcile(t *testing.T) {
 	committer := &mocks.Committer{}
 	fetcher := &mocks.ReconciliationFetcher{}
 	missingPvtDataTracker := &mocks.MissingPvtDataTracker{}
-	var missingInfo ledger.MissingPvtDataInfo
-	missingInfo = make(map[uint64]ledger.MissingBlockPvtdataInfo)
+	missingInfo := ledger.MissingPvtDataInfo{}
 
 	missingPvtDataTracker.On("GetMissingPvtDataInfoForMostRecentBlocks", mock.Anything).Return(missingInfo, nil)
 	committer.On("GetMissingPvtDataTracker").Return(missingPvtDataTracker, nil)
 	fetcher.On("FetchReconciledItems", mock.Anything).Return(nil, errors.New("this function shouldn't be called"))
 
-	r := &Reconciler{channel: "", metrics: metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics,
-		config:                &ReconcilerConfig{SleepInterval: time.Minute, BatchSize: 1, IsEnabled: true},
-		ReconciliationFetcher: fetcher, Committer: committer}
+	r := &Reconciler{
+		channel:                "",
+		metrics:                metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics,
+		ReconcileSleepInterval: time.Minute,
+		ReconcileBatchSize:     1,
+		ReconciliationFetcher:  fetcher, Committer: committer,
+	}
 	err := r.reconcile()
 
 	assert.NoError(t, err)
@@ -56,9 +60,8 @@ func TestNotReconcilingWhenCollectionConfigNotAvailable(t *testing.T) {
 	fetcher := &mocks.ReconciliationFetcher{}
 	configHistoryRetriever := &mocks.ConfigHistoryRetriever{}
 	missingPvtDataTracker := &mocks.MissingPvtDataTracker{}
-	var missingInfo ledger.MissingPvtDataInfo
 
-	missingInfo = map[uint64]ledger.MissingBlockPvtdataInfo{
+	missingInfo := ledger.MissingPvtDataInfo{
 		1: map[uint64][]*ledger.MissingCollectionPvtDataInfo{
 			1: {{Collection: "col1", Namespace: "chain1"}},
 		},
@@ -78,9 +81,13 @@ func TestNotReconcilingWhenCollectionConfigNotAvailable(t *testing.T) {
 		fetchCalled = true
 	}).Return(nil, errors.New("called with no digests"))
 
-	r := &Reconciler{channel: "", metrics: metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics,
-		config:                &ReconcilerConfig{SleepInterval: time.Minute, BatchSize: 1, IsEnabled: true},
-		ReconciliationFetcher: fetcher, Committer: committer}
+	r := &Reconciler{
+		channel:                "",
+		metrics:                metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics,
+		ReconcileSleepInterval: time.Minute,
+		ReconcileBatchSize:     1,
+		ReconciliationFetcher:  fetcher, Committer: committer,
+	}
 	err := r.reconcile()
 
 	assert.Error(t, err)
@@ -94,19 +101,22 @@ func TestReconciliationHappyPathWithoutScheduler(t *testing.T) {
 	fetcher := &mocks.ReconciliationFetcher{}
 	configHistoryRetriever := &mocks.ConfigHistoryRetriever{}
 	missingPvtDataTracker := &mocks.MissingPvtDataTracker{}
-	var missingInfo ledger.MissingPvtDataInfo
 
-	missingInfo = map[uint64]ledger.MissingBlockPvtdataInfo{
+	missingInfo := ledger.MissingPvtDataInfo{
 		3: map[uint64][]*ledger.MissingCollectionPvtDataInfo{
 			1: {{Collection: "col1", Namespace: "ns1"}},
+		},
+		4: map[uint64][]*ledger.MissingCollectionPvtDataInfo{
+			4: {{Collection: "col1", Namespace: "ns1"}},
+			5: {{Collection: "col1", Namespace: "ns1"}},
 		},
 	}
 
 	collectionConfigInfo := ledger.CollectionConfigInfo{
-		CollectionConfig: &common.CollectionConfigPackage{
-			Config: []*common.CollectionConfig{
-				{Payload: &common.CollectionConfig_StaticCollectionConfig{
-					StaticCollectionConfig: &common.StaticCollectionConfig{
+		CollectionConfig: &peer.CollectionConfigPackage{
+			Config: []*peer.CollectionConfig{
+				{Payload: &peer.CollectionConfig_StaticCollectionConfig{
+					StaticCollectionConfig: &peer.StaticCollectionConfig{
 						Name: "col1",
 					},
 				}},
@@ -126,8 +136,13 @@ func TestReconciliationHappyPathWithoutScheduler(t *testing.T) {
 	result := &privdatacommon.FetchedPvtDataContainer{}
 	fetcher.On("FetchReconciledItems", mock.Anything).Run(func(args mock.Arguments) {
 		var dig2CollectionConfig = args.Get(0).(privdatacommon.Dig2CollectionConfig)
-		assert.Equal(t, 1, len(dig2CollectionConfig))
+		require.Equal(t, 3, len(dig2CollectionConfig))
 		for digest := range dig2CollectionConfig {
+			if digest.BlockSeq != 3 {
+				// fetch private data only for block 3. Assume that the other
+				// block's private data could not be fetched
+				continue
+			}
 			hash := util2.ComputeSHA256([]byte("rws-pre-image"))
 			element := &gossip2.PvtDataElement{
 				Digest: &gossip2.PvtDataDigest{
@@ -143,26 +158,41 @@ func TestReconciliationHappyPathWithoutScheduler(t *testing.T) {
 		}
 	}).Return(result, nil)
 
+	expectedUnreconciledMissingData := ledger.MissingPvtDataInfo{
+		4: map[uint64][]*ledger.MissingCollectionPvtDataInfo{
+			4: {{Collection: "col1", Namespace: "ns1"}},
+			5: {{Collection: "col1", Namespace: "ns1"}},
+		},
+	}
+
 	var commitPvtDataOfOldBlocksHappened bool
 	var blockNum, seqInBlock uint64
 	blockNum = 3
 	seqInBlock = 1
-	committer.On("CommitPvtDataOfOldBlocks", mock.Anything).Run(func(args mock.Arguments) {
-		var blockPvtData = args.Get(0).([]*ledger.BlockPvtData)
-		assert.Equal(t, 1, len(blockPvtData))
-		assert.Equal(t, blockNum, blockPvtData[0].BlockNum)
-		assert.Equal(t, seqInBlock, blockPvtData[0].WriteSets[1].SeqInBlock)
-		assert.Equal(t, "ns1", blockPvtData[0].WriteSets[1].WriteSet.NsPvtRwset[0].Namespace)
-		assert.Equal(t, "col1", blockPvtData[0].WriteSets[1].WriteSet.NsPvtRwset[0].CollectionPvtRwset[0].CollectionName)
+	committer.On("CommitPvtDataOfOldBlocks", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		require.Len(t, args, 2)
+		var reconciledPvtdata = args.Get(0).([]*ledger.ReconciledPvtdata)
+		assert.Equal(t, 1, len(reconciledPvtdata))
+		assert.Equal(t, blockNum, reconciledPvtdata[0].BlockNum)
+		assert.Equal(t, seqInBlock, reconciledPvtdata[0].WriteSets[1].SeqInBlock)
+		assert.Equal(t, "ns1", reconciledPvtdata[0].WriteSets[1].WriteSet.NsPvtRwset[0].Namespace)
+		assert.Equal(t, "col1", reconciledPvtdata[0].WriteSets[1].WriteSet.NsPvtRwset[0].CollectionPvtRwset[0].CollectionName)
 		commitPvtDataOfOldBlocksHappened = true
+
+		var unreconciledPvtdata = args.Get(1).(ledger.MissingPvtDataInfo)
+		require.Equal(t, expectedUnreconciledMissingData, unreconciledPvtdata)
 	}).Return([]*ledger.PvtdataHashMismatch{}, nil)
 
 	testMetricProvider := gmetricsmocks.TestUtilConstructMetricProvider()
 	metrics := metrics.NewGossipMetrics(testMetricProvider.FakeProvider).PrivdataMetrics
 
-	r := &Reconciler{channel: "mychannel", metrics: metrics,
-		config:                &ReconcilerConfig{SleepInterval: time.Minute, BatchSize: 1, IsEnabled: true},
-		ReconciliationFetcher: fetcher, Committer: committer}
+	r := &Reconciler{
+		channel:                "mychannel",
+		metrics:                metrics,
+		ReconcileSleepInterval: time.Minute,
+		ReconcileBatchSize:     1,
+		ReconciliationFetcher:  fetcher, Committer: committer,
+	}
 	err := r.reconcile()
 
 	assert.NoError(t, err)
@@ -180,19 +210,18 @@ func TestReconciliationHappyPathWithScheduler(t *testing.T) {
 	fetcher := &mocks.ReconciliationFetcher{}
 	configHistoryRetriever := &mocks.ConfigHistoryRetriever{}
 	missingPvtDataTracker := &mocks.MissingPvtDataTracker{}
-	var missingInfo ledger.MissingPvtDataInfo
 
-	missingInfo = map[uint64]ledger.MissingBlockPvtdataInfo{
+	missingInfo := ledger.MissingPvtDataInfo{
 		3: map[uint64][]*ledger.MissingCollectionPvtDataInfo{
 			1: {{Collection: "col1", Namespace: "ns1"}},
 		},
 	}
 
 	collectionConfigInfo := ledger.CollectionConfigInfo{
-		CollectionConfig: &common.CollectionConfigPackage{
-			Config: []*common.CollectionConfig{
-				{Payload: &common.CollectionConfig_StaticCollectionConfig{
-					StaticCollectionConfig: &common.StaticCollectionConfig{
+		CollectionConfig: &peer.CollectionConfigPackage{
+			Config: []*peer.CollectionConfig{
+				{Payload: &peer.CollectionConfig_StaticCollectionConfig{
+					StaticCollectionConfig: &peer.StaticCollectionConfig{
 						Name: "col1",
 					},
 				}},
@@ -236,19 +265,29 @@ func TestReconciliationHappyPathWithScheduler(t *testing.T) {
 	var blockNum, seqInBlock uint64
 	blockNum = 3
 	seqInBlock = 1
-	committer.On("CommitPvtDataOfOldBlocks", mock.Anything).Run(func(args mock.Arguments) {
-		var blockPvtData = args.Get(0).([]*ledger.BlockPvtData)
-		assert.Equal(t, 1, len(blockPvtData))
-		assert.Equal(t, blockNum, blockPvtData[0].BlockNum)
-		assert.Equal(t, seqInBlock, blockPvtData[0].WriteSets[1].SeqInBlock)
-		assert.Equal(t, "ns1", blockPvtData[0].WriteSets[1].WriteSet.NsPvtRwset[0].Namespace)
-		assert.Equal(t, "col1", blockPvtData[0].WriteSets[1].WriteSet.NsPvtRwset[0].CollectionPvtRwset[0].CollectionName)
+	committer.On("CommitPvtDataOfOldBlocks", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		var reconciledPvtdata = args.Get(0).([]*ledger.ReconciledPvtdata)
+		assert.Equal(t, 1, len(reconciledPvtdata))
+		assert.Equal(t, blockNum, reconciledPvtdata[0].BlockNum)
+		assert.Equal(t, seqInBlock, reconciledPvtdata[0].WriteSets[1].SeqInBlock)
+		assert.Equal(t, "ns1", reconciledPvtdata[0].WriteSets[1].WriteSet.NsPvtRwset[0].Namespace)
+		assert.Equal(t, "col1", reconciledPvtdata[0].WriteSets[1].WriteSet.NsPvtRwset[0].CollectionPvtRwset[0].CollectionName)
 		commitPvtDataOfOldBlocksHappened = true
+
+		require.Nil(t, args.Get(1))
 		wg.Done()
 	}).Return([]*ledger.PvtdataHashMismatch{}, nil)
 
-	r := NewReconciler("", metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics, committer, fetcher,
-		&ReconcilerConfig{SleepInterval: time.Millisecond * 100, BatchSize: 1, IsEnabled: true})
+	r := NewReconciler(
+		"",
+		metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics,
+		committer,
+		fetcher,
+		&PrivdataConfig{
+			ReconcileSleepInterval: time.Millisecond * 100,
+			ReconcileBatchSize:     1,
+			ReconciliationEnabled:  true,
+		})
 	r.Start()
 	wg.Wait()
 	r.Stop()
@@ -272,15 +311,15 @@ func TestReconciliationPullingMissingPrivateDataAtOnePass(t *testing.T) {
 	}
 
 	collectionConfigInfo := &ledger.CollectionConfigInfo{
-		CollectionConfig: &common.CollectionConfigPackage{
-			Config: []*common.CollectionConfig{
-				{Payload: &common.CollectionConfig_StaticCollectionConfig{
-					StaticCollectionConfig: &common.StaticCollectionConfig{
+		CollectionConfig: &peer.CollectionConfigPackage{
+			Config: []*peer.CollectionConfig{
+				{Payload: &peer.CollectionConfig_StaticCollectionConfig{
+					StaticCollectionConfig: &peer.StaticCollectionConfig{
 						Name: "col1",
 					},
 				}},
-				{Payload: &common.CollectionConfig_StaticCollectionConfig{
-					StaticCollectionConfig: &common.StaticCollectionConfig{
+				{Payload: &peer.CollectionConfig_StaticCollectionConfig{
+					StaticCollectionConfig: &peer.StaticCollectionConfig{
 						Name: "col2",
 					},
 				}},
@@ -348,17 +387,27 @@ func TestReconciliationPullingMissingPrivateDataAtOnePass(t *testing.T) {
 	wg.Add(2)
 
 	var commitPvtDataOfOldBlocksHappened bool
-	pvtDataStore := make([][]*ledger.BlockPvtData, 0)
-	committer.On("CommitPvtDataOfOldBlocks", mock.Anything).Run(func(args mock.Arguments) {
-		var blockPvtData = args.Get(0).([]*ledger.BlockPvtData)
-		assert.Equal(t, 1, len(blockPvtData))
-		pvtDataStore = append(pvtDataStore, blockPvtData)
+	pvtDataStore := make([][]*ledger.ReconciledPvtdata, 0)
+	committer.On("CommitPvtDataOfOldBlocks", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		var reconciledPvtdata = args.Get(0).([]*ledger.ReconciledPvtdata)
+		assert.Equal(t, 1, len(reconciledPvtdata))
+		pvtDataStore = append(pvtDataStore, reconciledPvtdata)
 		commitPvtDataOfOldBlocksHappened = true
+
+		require.Nil(t, args.Get(1))
 		wg.Done()
 	}).Return([]*ledger.PvtdataHashMismatch{}, nil)
 
-	r := NewReconciler("", metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics, committer, fetcher,
-		&ReconcilerConfig{SleepInterval: time.Millisecond * 100, BatchSize: 1, IsEnabled: true})
+	r := NewReconciler(
+		"",
+		metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics,
+		committer,
+		fetcher,
+		&PrivdataConfig{
+			ReconcileSleepInterval: time.Millisecond * 100,
+			ReconcileBatchSize:     1,
+			ReconciliationEnabled:  true,
+		})
 	r.Start()
 	<-stopC
 	r.Stop()
@@ -386,19 +435,18 @@ func TestReconciliationFailedToCommit(t *testing.T) {
 	fetcher := &mocks.ReconciliationFetcher{}
 	configHistoryRetriever := &mocks.ConfigHistoryRetriever{}
 	missingPvtDataTracker := &mocks.MissingPvtDataTracker{}
-	var missingInfo ledger.MissingPvtDataInfo
 
-	missingInfo = map[uint64]ledger.MissingBlockPvtdataInfo{
+	missingInfo := ledger.MissingPvtDataInfo{
 		3: map[uint64][]*ledger.MissingCollectionPvtDataInfo{
 			1: {{Collection: "col1", Namespace: "ns1"}},
 		},
 	}
 
 	collectionConfigInfo := ledger.CollectionConfigInfo{
-		CollectionConfig: &common.CollectionConfigPackage{
-			Config: []*common.CollectionConfig{
-				{Payload: &common.CollectionConfig_StaticCollectionConfig{
-					StaticCollectionConfig: &common.StaticCollectionConfig{
+		CollectionConfig: &peer.CollectionConfigPackage{
+			Config: []*peer.CollectionConfig{
+				{Payload: &peer.CollectionConfig_StaticCollectionConfig{
+					StaticCollectionConfig: &peer.StaticCollectionConfig{
 						Name: "col1",
 					},
 				}},
@@ -435,11 +483,15 @@ func TestReconciliationFailedToCommit(t *testing.T) {
 		}
 	}).Return(result, nil)
 
-	committer.On("CommitPvtDataOfOldBlocks", mock.Anything).Return(nil, errors.New("failed to commit"))
+	committer.On("CommitPvtDataOfOldBlocks", mock.Anything, mock.Anything).Return(nil, errors.New("failed to commit"))
 
-	r := &Reconciler{channel: "", metrics: metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics,
-		config:                &ReconcilerConfig{SleepInterval: time.Minute, BatchSize: 1, IsEnabled: true},
-		ReconciliationFetcher: fetcher, Committer: committer}
+	r := &Reconciler{
+		channel:                "",
+		metrics:                metrics.NewGossipMetrics(&disabled.Provider{}).PrivdataMetrics,
+		ReconcileSleepInterval: time.Minute,
+		ReconcileBatchSize:     1,
+		ReconciliationFetcher:  fetcher, Committer: committer,
+	}
 	err := r.reconcile()
 
 	assert.Error(t, err)
@@ -452,8 +504,16 @@ func TestFailuresWhileReconcilingMissingPvtData(t *testing.T) {
 	fetcher := &mocks.ReconciliationFetcher{}
 	committer.On("GetMissingPvtDataTracker").Return(nil, errors.New("failed to obtain missing pvt data tracker"))
 
-	r := NewReconciler("", metrics, committer, fetcher,
-		&ReconcilerConfig{SleepInterval: time.Millisecond * 100, BatchSize: 1, IsEnabled: true})
+	r := NewReconciler(
+		"",
+		metrics,
+		committer,
+		fetcher,
+		&PrivdataConfig{
+			ReconcileSleepInterval: time.Millisecond * 100,
+			ReconcileBatchSize:     1,
+			ReconciliationEnabled:  true,
+		})
 	err := r.reconcile()
 	assert.Error(t, err)
 	assert.Contains(t, "failed to obtain missing pvt data tracker", err.Error())
@@ -461,7 +521,7 @@ func TestFailuresWhileReconcilingMissingPvtData(t *testing.T) {
 	committer.Mock = mock.Mock{}
 	committer.On("GetMissingPvtDataTracker").Return(nil, nil)
 	r = NewReconciler("", metrics, committer, fetcher,
-		&ReconcilerConfig{SleepInterval: time.Millisecond * 100, BatchSize: 1, IsEnabled: true})
+		&PrivdataConfig{ReconcileSleepInterval: time.Millisecond * 100, ReconcileBatchSize: 1, ReconciliationEnabled: true})
 	err = r.reconcile()
 	assert.Error(t, err)
 	assert.Contains(t, "got nil as MissingPvtDataTracker, exiting...", err.Error())
@@ -472,8 +532,176 @@ func TestFailuresWhileReconcilingMissingPvtData(t *testing.T) {
 	committer.Mock = mock.Mock{}
 	committer.On("GetMissingPvtDataTracker").Return(missingPvtDataTracker, nil)
 	r = NewReconciler("", metrics, committer, fetcher,
-		&ReconcilerConfig{SleepInterval: time.Millisecond * 100, BatchSize: 1, IsEnabled: true})
+		&PrivdataConfig{ReconcileSleepInterval: time.Millisecond * 100, ReconcileBatchSize: 1, ReconciliationEnabled: true})
 	err = r.reconcile()
 	assert.Error(t, err)
 	assert.Contains(t, "failed get missing pvt data for recent blocks", err.Error())
+}
+
+func TestConstructUnreconciledMissingData(t *testing.T) {
+	requestedMissingData := privdatacommon.Dig2CollectionConfig{
+		privdatacommon.DigKey{
+			TxId:       "tx1",
+			Namespace:  "ns1",
+			Collection: "coll1",
+			BlockSeq:   1,
+			SeqInBlock: 1,
+		}: nil,
+		privdatacommon.DigKey{
+			TxId:       "tx1",
+			Namespace:  "ns2",
+			Collection: "coll2",
+			BlockSeq:   1,
+			SeqInBlock: 1,
+		}: nil,
+		privdatacommon.DigKey{
+			TxId:       "tx1",
+			Namespace:  "ns3",
+			Collection: "coll3",
+			BlockSeq:   1,
+			SeqInBlock: 3,
+		}: nil,
+		privdatacommon.DigKey{
+			TxId:       "tx2",
+			Namespace:  "ns4",
+			Collection: "coll4",
+			BlockSeq:   4,
+			SeqInBlock: 4,
+		}: nil,
+	}
+
+	testCases := []struct {
+		description                     string
+		fetchedData                     []*gossip2.PvtDataElement
+		expectedUnreconciledMissingData ledger.MissingPvtDataInfo
+	}{
+		{
+			description: "none-reconciled",
+			fetchedData: nil,
+			expectedUnreconciledMissingData: ledger.MissingPvtDataInfo{
+				1: ledger.MissingBlockPvtdataInfo{
+					1: []*ledger.MissingCollectionPvtDataInfo{
+						{
+							Namespace:  "ns1",
+							Collection: "coll1",
+						},
+						{
+							Namespace:  "ns2",
+							Collection: "coll2",
+						},
+					},
+					3: []*ledger.MissingCollectionPvtDataInfo{
+						{
+							Namespace:  "ns3",
+							Collection: "coll3",
+						},
+					},
+				},
+				4: ledger.MissingBlockPvtdataInfo{
+					4: []*ledger.MissingCollectionPvtDataInfo{
+						{
+							Namespace:  "ns4",
+							Collection: "coll4",
+						},
+					},
+				},
+			},
+		},
+		{
+			description: "all-reconciled",
+			fetchedData: []*gossip2.PvtDataElement{
+				{
+					Digest: &gossip2.PvtDataDigest{
+						TxId:       "tx1",
+						Namespace:  "ns1",
+						Collection: "coll1",
+						BlockSeq:   1,
+						SeqInBlock: 1,
+					},
+				},
+				{
+					Digest: &gossip2.PvtDataDigest{
+						TxId:       "tx1",
+						Namespace:  "ns2",
+						Collection: "coll2",
+						BlockSeq:   1,
+						SeqInBlock: 1,
+					},
+				},
+				{
+					Digest: &gossip2.PvtDataDigest{
+						TxId:       "tx1",
+						Namespace:  "ns3",
+						Collection: "coll3",
+						BlockSeq:   1,
+						SeqInBlock: 3,
+					},
+				},
+				{
+					Digest: &gossip2.PvtDataDigest{
+						TxId:       "tx2",
+						Namespace:  "ns4",
+						Collection: "coll4",
+						BlockSeq:   4,
+						SeqInBlock: 4,
+					},
+				},
+			},
+			expectedUnreconciledMissingData: nil,
+		},
+		{
+			description: "some-unreconciled",
+			fetchedData: []*gossip2.PvtDataElement{
+				{
+					Digest: &gossip2.PvtDataDigest{
+						TxId:       "tx1",
+						Namespace:  "ns1",
+						Collection: "coll1",
+						BlockSeq:   1,
+						SeqInBlock: 1,
+					},
+				},
+				{
+					Digest: &gossip2.PvtDataDigest{
+						TxId:       "tx1",
+						Namespace:  "ns3",
+						Collection: "coll3",
+						BlockSeq:   1,
+						SeqInBlock: 3,
+					},
+				},
+				{
+					Digest: &gossip2.PvtDataDigest{
+						TxId:       "tx2",
+						Namespace:  "ns4",
+						Collection: "coll4",
+						BlockSeq:   4,
+						SeqInBlock: 4,
+					},
+				},
+			},
+			expectedUnreconciledMissingData: ledger.MissingPvtDataInfo{
+				1: ledger.MissingBlockPvtdataInfo{
+					1: []*ledger.MissingCollectionPvtDataInfo{
+						{
+							Namespace:  "ns2",
+							Collection: "coll2",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.description, func(t *testing.T) {
+			unreconciledData := constructUnreconciledMissingData(requestedMissingData, testCase.fetchedData)
+			require.Equal(t, len(testCase.expectedUnreconciledMissingData), len(unreconciledData))
+			for blkNum, txsMissingData := range testCase.expectedUnreconciledMissingData {
+				for txNum, expectedUnreconciledData := range txsMissingData {
+					require.ElementsMatch(t, expectedUnreconciledData, unreconciledData[blkNum][txNum])
+				}
+			}
+		})
+	}
 }

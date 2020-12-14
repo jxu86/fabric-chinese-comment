@@ -9,7 +9,7 @@ package capabilities
 import (
 	"testing"
 
-	cb "github.com/hyperledger/fabric/protos/common"
+	cb "github.com/hyperledger/fabric-protos-go/common"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -21,6 +21,7 @@ func TestOrdererV10(t *testing.T) {
 	assert.False(t, op.Resubmission())
 	assert.False(t, op.ExpirationCheck())
 	assert.False(t, op.ConsensusTypeMigration())
+	assert.False(t, op.UseChannelCreationPolicyAsAdmins())
 }
 
 func TestOrdererV11(t *testing.T) {
@@ -32,6 +33,7 @@ func TestOrdererV11(t *testing.T) {
 	assert.True(t, op.Resubmission())
 	assert.True(t, op.ExpirationCheck())
 	assert.False(t, op.ConsensusTypeMigration())
+	assert.False(t, op.UseChannelCreationPolicyAsAdmins())
 }
 
 func TestOrdererV142(t *testing.T) {
@@ -43,11 +45,24 @@ func TestOrdererV142(t *testing.T) {
 	assert.True(t, op.Resubmission())
 	assert.True(t, op.ExpirationCheck())
 	assert.True(t, op.ConsensusTypeMigration())
+	assert.False(t, op.UseChannelCreationPolicyAsAdmins())
 }
 
-func TestNotSuported(t *testing.T) {
+func TestOrdererV20(t *testing.T) {
 	op := NewOrdererProvider(map[string]*cb.Capability{
-		OrdererV1_1: {}, "Bogus_Not_suported": {},
+		OrdererV2_0: {},
 	})
-	assert.EqualError(t, op.Supported(), "Orderer capability Bogus_Not_suported is required but not supported")
+	assert.NoError(t, op.Supported())
+	assert.True(t, op.PredictableChannelTemplate())
+	assert.True(t, op.UseChannelCreationPolicyAsAdmins())
+	assert.True(t, op.Resubmission())
+	assert.True(t, op.ExpirationCheck())
+	assert.True(t, op.ConsensusTypeMigration())
+}
+
+func TestNotSupported(t *testing.T) {
+	op := NewOrdererProvider(map[string]*cb.Capability{
+		OrdererV1_1: {}, OrdererV2_0: {}, "Bogus_Not_Supported": {},
+	})
+	assert.EqualError(t, op.Supported(), "Orderer capability Bogus_Not_Supported is required but not supported")
 }

@@ -9,14 +9,16 @@ package discovery
 import (
 	"fmt"
 
+	protolib "github.com/golang/protobuf/proto"
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/gossip/common"
-	proto "github.com/hyperledger/fabric/protos/gossip"
+	"github.com/hyperledger/fabric/gossip/protoext"
 )
 
 // CryptoService is an interface that the discovery expects to be implemented and passed on creation
 type CryptoService interface {
 	// ValidateAliveMsg validates that an Alive message is authentic
-	ValidateAliveMsg(message *proto.SignedGossipMessage) bool
+	ValidateAliveMsg(message *protoext.SignedGossipMessage) bool
 
 	// SignMessage signs a message
 	SignMessage(m *proto.GossipMessage, internalEndpoint string) *proto.Envelope
@@ -24,12 +26,12 @@ type CryptoService interface {
 
 // EnvelopeFilter may or may not remove part of the Envelope
 // that the given SignedGossipMessage originates from.
-type EnvelopeFilter func(message *proto.SignedGossipMessage) *proto.Envelope
+type EnvelopeFilter func(message *protoext.SignedGossipMessage) *proto.Envelope
 
 // Sieve defines the messages that are allowed to be sent to some remote peer,
 // based on some criteria.
 // Returns whether the sieve permits sending a given message.
-type Sieve func(message *proto.SignedGossipMessage) bool
+type Sieve func(message *protoext.SignedGossipMessage) bool
 
 // DisclosurePolicy defines which messages a given remote peer
 // is eligible of knowing about, and also what is it eligible
@@ -45,17 +47,17 @@ type DisclosurePolicy func(remotePeer *NetworkMember) (Sieve, EnvelopeFilter)
 // CommService is an interface that the discovery expects to be implemented and passed on creation
 type CommService interface {
 	// Gossip gossips a message
-	Gossip(msg *proto.SignedGossipMessage)
+	Gossip(msg *protoext.SignedGossipMessage)
 
 	// SendToPeer sends to a given peer a message.
 	// The nonce can be anything since the communication module handles the nonce itself
-	SendToPeer(peer *NetworkMember, msg *proto.SignedGossipMessage)
+	SendToPeer(peer *NetworkMember, msg *protoext.SignedGossipMessage)
 
 	// Ping probes a remote peer and returns if it's responsive or not
 	Ping(peer *NetworkMember) bool
 
 	// Accept returns a read-only channel for membership messages sent from remote peers
-	Accept() <-chan proto.ReceivedMessage
+	Accept() <-chan protoext.ReceivedMessage
 
 	// PresumedDead returns a read-only channel for peers that are presumed to be dead
 	PresumedDead() <-chan common.PKIidType
@@ -65,7 +67,15 @@ type CommService interface {
 
 	// Forward sends message to the next hop, excluding the hop
 	// from which message was initially received
-	Forward(msg proto.ReceivedMessage)
+	Forward(msg protoext.ReceivedMessage)
+
+	// IdentitySwitch returns a read-only channel about identity change events
+	IdentitySwitch() <-chan common.PKIidType
+}
+
+// AnchorPeerTracker is an interface that is passed to discovery to check if an endpoint is an anchor peer
+type AnchorPeerTracker interface {
+	IsAnchorPeer(endpoint string) bool
 }
 
 // NetworkMember is a peer's representation
@@ -76,6 +86,28 @@ type NetworkMember struct {
 	InternalEndpoint string
 	Properties       *proto.Properties
 	*proto.Envelope
+}
+
+// Clone clones the NetworkMember
+func (n NetworkMember) Clone() NetworkMember {
+	pkiIDClone := make(common.PKIidType, len(n.PKIid))
+	copy(pkiIDClone, n.PKIid)
+	nmClone := NetworkMember{
+		Endpoint:         n.Endpoint,
+		Metadata:         n.Metadata,
+		InternalEndpoint: n.InternalEndpoint,
+		PKIid:            pkiIDClone,
+	}
+
+	if n.Properties != nil {
+		nmClone.Properties = protolib.Clone(n.Properties).(*proto.Properties)
+	}
+
+	if n.Envelope != nil {
+		nmClone.Envelope = protolib.Clone(n.Envelope).(*proto.Envelope)
+	}
+
+	return nmClone
 }
 
 // String returns a string representation of the NetworkMember

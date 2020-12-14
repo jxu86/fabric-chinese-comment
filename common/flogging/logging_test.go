@@ -55,11 +55,19 @@ type writeSyncer interface {
 func TestLoggingSetWriter(t *testing.T) {
 	ws := &mock.WriteSyncer{}
 
-	logging, err := flogging.New(flogging.Config{})
+	w := &bytes.Buffer{}
+	logging, err := flogging.New(flogging.Config{
+		Writer: w,
+	})
 	assert.NoError(t, err)
 
-	logging.SetWriter(ws)
-	logging.Write([]byte("hello"))
+	old := logging.SetWriter(ws)
+	logging.SetWriter(w)
+	original := logging.SetWriter(ws)
+
+	assert.Exactly(t, old, original)
+	_, err = logging.Write([]byte("hello"))
+	assert.NoError(t, err)
 	assert.Equal(t, 1, ws.WriteCallCount())
 	assert.Equal(t, []byte("hello"), ws.WriteArgsForCall(0))
 

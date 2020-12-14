@@ -21,10 +21,11 @@ data meet some condition required for those signatures to be considered
 'valid'. This is useful for determining that the correct parties have
 agreed to a transaction, or change.
 
-For example a policy may define any of the following: \* Administrators
-from 2 out 5 possible different organizations must sign. \* Any member
-from any organization must sign. \* Two specific certificates must both
-sign.
+For example a policy may define any of the following:
+
+* Administrators from 2 out 5 possible different organizations must sign.
+* Any member from any organization must sign.
+* Two specific certificates must both sign.
 
 Of course these are only examples, and other more powerful rules can be
 constructed.
@@ -47,7 +48,7 @@ There are presently two different types of policies implemented:
    the organization admin policies".
 
 Policies are encoded in a ``common.Policy`` message as defined in
-``fabric/protos/common/policies.proto``. They are defined by the
+``fabric-protos/common/policies.proto``. They are defined by the
 following message:
 
 ::
@@ -90,7 +91,7 @@ minimally as follows:
                     Writers
                     Admins
                 Groups:
-                    OrdereringOrganization1:
+                    OrderingOrganization1:
                         Policies:
                             Readers
                             Writers
@@ -265,7 +266,7 @@ cryptography other than X.509, for the purposes of this document, the
 discussion will assume that the underlying MSP implementation is the
 default MSP type, based on X.509 cryptography.
 
-An MSP Principal is defined in ``fabric/protos/msp_principal.proto`` as
+An MSP Principal is defined in ``fabric-protos/msp_principal.proto`` as
 follows:
 
 ::
@@ -330,7 +331,7 @@ The ``ImplicitMetaPolicy`` is only validly defined in the context of
 channel configuration. It is ``Implicit`` because it is constructed
 implicitly based on the current configuration, and it is ``Meta``
 because its evaluation is not against MSP principals, but rather against
-other policies. It is defined in ``fabric/protos/common/policies.proto``
+other policies. It is defined in ``fabric-protos/common/policies.proto``
 as follows:
 
 ::
@@ -381,26 +382,7 @@ organization's ``bar`` policies are satisfied.
 Policy Defaults
 ---------------
 
-The ``configtxgen`` tool creates default policies as follows:
-
-::
-
-    /Channel/Readers : ImplicitMetaPolicy for ANY of /Channel/*/Readers
-    /Channel/Writers : ImplicitMetaPolicy for ANY of /Channel/*/Writers
-    /Channel/Admins  : ImplicitMetaPolicy for MAJORITY of /Channel/*/Admins
-
-    /Channel/Application/Readers : ImplicitMetaPolicy for ANY of /Channel/Application/*/Readers
-    /Channel/Application/Writers : ImplicitMetaPolicy for ANY of /Channel/Application/*/Writers
-    /Channel/Application/Admins  : ImplicitMetaPolicy for MAJORITY of /Channel/Application/*/Admins
-
-    /Channel/Orderer/Readers : ImplicitMetaPolicy for ANY of /Channel/Orderer/*/Readers
-    /Channel/Orderer/Writers : ImplicitMetaPolicy for ANY of /Channel/Orderer/*/Writers
-    /Channel/Orderer/Admins  : ImplicitMetaPolicy for MAJORITY of /Channel/Orderer/*/Admins
-
-    # Here * represents either Orderer, or Application, and this is repeated for each org
-    /Channel/*/Org/Readers : SignaturePolicy for 1 of MSP Principal Org Member
-    /Channel/*/Org/Writers : SignaturePolicy for 1 of MSP Principal Org Member
-    /Channel/*/Org/Admins  : SignaturePolicy for 1 of MSP Principal Org Admin
+The ``configtxgen`` tool uses policies which must be specified explicitly in configtx.yaml.
 
 Note that policies higher in the hierarchy are all defined as
 ``ImplicitMetaPolicy``\ s while leaf nodes necessarily are defined as

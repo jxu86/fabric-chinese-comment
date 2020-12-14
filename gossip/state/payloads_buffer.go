@@ -10,9 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/gossip/util"
-	proto "github.com/hyperledger/fabric/protos/gossip"
 )
 
 // PayloadsBuffer is used to store payloads into which used to
@@ -81,7 +81,7 @@ func (b *PayloadsBufferImpl) Push(payload *proto.Payload) {
 	seqNum := payload.SeqNum
 
 	if seqNum < b.next || b.buf[seqNum] != nil {
-		logger.Debugf("Payload with sequence number = %d has been already processed", payload.SeqNum)
+		b.logger.Debugf("Payload with sequence number = %d has been already processed", payload.SeqNum)
 		return
 	}
 

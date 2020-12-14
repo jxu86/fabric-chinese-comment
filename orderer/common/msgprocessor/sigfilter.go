@@ -9,10 +9,11 @@ package msgprocessor
 import (
 	"fmt"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/policies"
-	cb "github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
@@ -52,7 +53,7 @@ func (sf *SigFilter) Apply(message *cb.Envelope) error {
 		logger.Panic("Programming error: orderer config not found")
 	}
 
-	signedData, err := message.AsSignedData()
+	signedData, err := protoutil.EnvelopeAsSignedData(message)
 
 	if err != nil {
 		return fmt.Errorf("could not convert message to signedData: %s", err)
@@ -71,7 +72,7 @@ func (sf *SigFilter) Apply(message *cb.Envelope) error {
 		return fmt.Errorf("could not find policy %s", policyName)
 	}
 
-	err = policy.Evaluate(signedData)
+	err = policy.EvaluateSignedData(signedData)
 	if err != nil {
 		logger.Debugf("SigFilter evaluation failed: %s, policyName: %s, ConsensusState: %s", err.Error(), policyName, ordererConf.ConsensusState())
 		return errors.Wrap(errors.WithStack(ErrPermissionDenied), err.Error())

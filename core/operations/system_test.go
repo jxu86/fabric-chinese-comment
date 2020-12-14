@@ -32,6 +32,8 @@ import (
 )
 
 var _ = Describe("System", func() {
+	const AdditionalTestApiPath = "/some-additional-test-api"
+
 	var (
 		fakeLogger *fakes.Logger
 		tempDir    string
@@ -44,7 +46,7 @@ var _ = Describe("System", func() {
 
 	BeforeEach(func() {
 		var err error
-		tempDir, err := ioutil.TempDir("", "opssys")
+		tempDir, err = ioutil.TempDir("", "opssys")
 		Expect(err).NotTo(HaveOccurred())
 
 		generateCertificates(tempDir)
@@ -78,6 +80,17 @@ var _ = Describe("System", func() {
 		}
 	})
 
+	It("hosts an unsecured endpoint for the version information", func() {
+		err := system.Start()
+		Expect(err).NotTo(HaveOccurred())
+
+		versionURL := fmt.Sprintf("https://%s/version", system.Addr())
+		resp, err := client.Get(versionURL)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		resp.Body.Close()
+	})
+
 	It("hosts a secure endpoint for logging", func() {
 		err := system.Start()
 		Expect(err).NotTo(HaveOccurred())
@@ -89,6 +102,41 @@ var _ = Describe("System", func() {
 		resp.Body.Close()
 
 		resp, err = unauthClient.Get(logspecURL)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+	})
+
+	It("does not host a secure endpoint for additional APIs by default", func() {
+		err := system.Start()
+		Expect(err).NotTo(HaveOccurred())
+
+		addApiURL := fmt.Sprintf("https://%s%s", system.Addr(), AdditionalTestApiPath)
+		resp, err := client.Get(addApiURL)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound)) // service is not handled by default, i.e. in peer
+		resp.Body.Close()
+
+		resp, err = unauthClient.Get(addApiURL)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+	})
+
+	It("hosts a secure endpoint for additional APIs when added", func() {
+		system.RegisterHandler(AdditionalTestApiPath, &fakes.Handler{Code: http.StatusOK, Text: "secure"})
+		err := system.Start()
+		Expect(err).NotTo(HaveOccurred())
+
+		addApiURL := fmt.Sprintf("https://%s%s", system.Addr(), AdditionalTestApiPath)
+		resp, err := client.Get(addApiURL)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(resp.Header.Get("Content-Type")).To(Equal("text/plain; charset=utf-8"))
+		buff, err := ioutil.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(buff)).To(Equal("secure"))
+		resp.Body.Close()
+
+		resp, err = unauthClient.Get(addApiURL)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
@@ -108,6 +156,33 @@ var _ = Describe("System", func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			resp.Body.Close()
 		})
+
+		It("does not host an insecure endpoint for additional APIs by default", func() {
+			err := system.Start()
+			Expect(err).NotTo(HaveOccurred())
+
+			addApiURL := fmt.Sprintf("http://%s%s", system.Addr(), AdditionalTestApiPath)
+			resp, err := client.Get(addApiURL)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound)) // service is not handled by default, i.e. in peer
+			resp.Body.Close()
+		})
+
+		It("hosts an insecure endpoint for additional APIs when added", func() {
+			system.RegisterHandler(AdditionalTestApiPath, &fakes.Handler{Code: http.StatusOK, Text: "insecure"})
+			err := system.Start()
+			Expect(err).NotTo(HaveOccurred())
+
+			addApiURL := fmt.Sprintf("http://%s%s", system.Addr(), AdditionalTestApiPath)
+			resp, err := client.Get(addApiURL)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			Expect(resp.Header.Get("Content-Type")).To(Equal("text/plain; charset=utf-8"))
+			buff, err := ioutil.ReadAll(resp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(buff)).To(Equal("insecure"))
+			resp.Body.Close()
+		})
 	})
 
 	Context("when ClientCertRequired is true", func() {
@@ -121,8 +196,7 @@ var _ = Describe("System", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = unauthClient.Get(fmt.Sprintf("https://%s/healthz", system.Addr()))
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("remote error: tls: bad certificate"))
+			Expect(err).To(MatchError(ContainSubstring("remote error: tls: bad certificate")))
 		})
 	})
 
@@ -144,8 +218,7 @@ var _ = Describe("System", func() {
 
 		It("returns an error", func() {
 			err := system.Start()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("bind: address already in use"))
+			Expect(err).To(MatchError(ContainSubstring("bind: address already in use")))
 		})
 	})
 
@@ -353,8 +426,7 @@ var _ = Describe("System", func() {
 
 			It("returns an error", func() {
 				err := system.Start()
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("bob-the-network"))
+				Expect(err).To(MatchError(ContainSubstring("bob-the-network")))
 			})
 		})
 	})

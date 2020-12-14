@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	msp2 "github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/msp/mocks"
-	msp2 "github.com/hyperledger/fabric/protos/msp"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -165,7 +165,7 @@ func TestDeserializeIdentity(t *testing.T) {
 	mockIdentity = &mocks.MockIdentity{ID: "Bob"}
 	serializedIdentity = []byte{1, 2, 3, 4}
 	mockMSP.On("DeserializeIdentity", serializedIdentity).Return(mockIdentity, errors.New("Invalid identity"))
-	id, err = wrappedMSP.DeserializeIdentity(serializedIdentity)
+	_, err = wrappedMSP.DeserializeIdentity(serializedIdentity)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Invalid identity")
 	mockMSP.AssertExpectations(t)

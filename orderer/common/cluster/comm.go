@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/core/comm"
-	"github.com/hyperledger/fabric/protos/orderer"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -104,6 +104,7 @@ type Comm struct {
 	Connections                      *ConnectionStore
 	Chan2Members                     MembersByChannel
 	Metrics                          *Metrics
+	CompareCertificate               CertificateComparator
 }
 
 type requestContext struct {
@@ -131,7 +132,7 @@ func (c *Comm) DispatchConsensus(ctx context.Context, request *orderer.Consensus
 	return c.H.OnConsensus(reqCtx.channel, reqCtx.sender, request)
 }
 
-// classifyRequest identifies the sender and channel of the request and returns
+// requestContext identifies the sender and channel of the request and returns
 // it wrapped in a requestContext
 func (c *Comm) requestContext(ctx context.Context, msg proto.Message) (*requestContext, error) {
 	channel := c.ChanExt.TargetChannel(msg)
@@ -231,9 +232,9 @@ func (c *Comm) Shutdown() {
 
 	c.shutdown = true
 	for _, members := range c.Chan2Members {
-		for _, member := range members {
-			c.Connections.Disconnect(member.ServerTLSCert)
-		}
+		members.Foreach(func(id uint64, stub *Stub) {
+			c.Connections.Disconnect(stub.ServerTLSCert)
+		})
 	}
 }
 
@@ -272,15 +273,15 @@ func (c *Comm) applyMembershipConfig(channel string, newNodes []RemoteNode) {
 
 	// Remove all stubs without a corresponding node
 	// in the new nodes
-	for id, stub := range mapping {
+	mapping.Foreach(func(id uint64, stub *Stub) {
 		if _, exists := newNodeIDs[id]; exists {
 			c.Logger.Info(id, "exists in both old and new membership for channel", channel, ", skipping its deactivation")
-			continue
+			return
 		}
 		c.Logger.Info("Deactivated node", id, "who's endpoint is", stub.Endpoint, "as it's removed from membership")
-		delete(mapping, id)
+		mapping.Remove(id)
 		stub.Deactivate()
-	}
+	})
 }
 
 // updateStubInMapping updates the given RemoteNode and adds it to the MemberMapping
@@ -374,7 +375,10 @@ func (c *Comm) getOrCreateMapping(channel string) MemberMapping {
 	// Lazily create a mapping if it doesn't already exist
 	mapping, exists := c.Chan2Members[channel]
 	if !exists {
-		mapping = make(MemberMapping)
+		mapping = MemberMapping{
+			id2stub:       make(map[uint64]*Stub),
+			SamePublicKey: c.CompareCertificate,
+		}
 		c.Chan2Members[channel] = mapping
 	}
 	return mapping

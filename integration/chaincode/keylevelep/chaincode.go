@@ -10,9 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/hyperledger/fabric/core/chaincode/shim"
-	"github.com/hyperledger/fabric/core/chaincode/shim/ext/statebased"
-	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/hyperledger/fabric-chaincode-go/pkg/statebased"
+	"github.com/hyperledger/fabric-chaincode-go/shim"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
 )
 
 /*
@@ -120,13 +120,18 @@ func delOrgs(stub shim.ChaincodeStubInterface) pb.Response {
 	// get the endorsement policy for the key
 	var epBytes []byte
 	var err error
-	if parameters[0] == "pub" {
+	switch parameters[0] {
+	case "pub":
 		epBytes, err = stub.GetStateValidationParameter("pub")
-	} else if parameters[0] == "priv" {
+	case "priv":
 		epBytes, err = stub.GetPrivateDataValidationParameter("col", "priv")
-	} else {
+	default:
 		return shim.Error("Unknown key specified")
 	}
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
 	ep, err := statebased.NewStateEP(epBytes)
 	if err != nil {
 		return shim.Error(err.Error())
@@ -163,13 +168,18 @@ func listOrgs(stub shim.ChaincodeStubInterface) pb.Response {
 	// get the endorsement policy for the key
 	var epBytes []byte
 	var err error
-	if parameters[0] == "pub" {
+	switch parameters[0] {
+	case "pub":
 		epBytes, err = stub.GetStateValidationParameter("pub")
-	} else if parameters[0] == "priv" {
+	case "priv":
 		epBytes, err = stub.GetPrivateDataValidationParameter("col", "priv")
-	} else {
+	default:
 		return shim.Error("Unknown key specified")
 	}
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
 	ep, err := statebased.NewStateEP(epBytes)
 	if err != nil {
 		return shim.Error(err.Error())

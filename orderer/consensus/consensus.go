@@ -7,11 +7,12 @@ SPDX-License-Identifier: Apache-2.0
 package consensus
 
 import (
+	cb "github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/common/channelconfig"
-	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric/internal/pkg/identity"
 	"github.com/hyperledger/fabric/orderer/common/blockcutter"
 	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
-	cb "github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protoutil"
 )
 
 // Consenter defines the backing ordering mechanism.
@@ -23,6 +24,23 @@ type Consenter interface {
 	// the last block committed to the ledger of this Chain. For a new chain, or one which is migrated,
 	// this metadata will be nil (or contain a zero-length Value), as there is no prior metadata to report.
 	HandleChain(support ConsenterSupport, metadata *cb.Metadata) (Chain, error)
+
+	// JoinChain should create and return a reference to a Chain when the channel is started with a join-block
+	// that is not a genesis block (i.e. join-block.number>0), and a ledger with height <= than join-block.number.
+	// This means that there is a gap between the join-block and the last block in the ledger that requires
+	// on-boarding. In contrast, HandleChain creates a Chain based on the last block found in the ledger.
+	JoinChain(support ConsenterSupport, joinBlock *cb.Block) (Chain, error)
+}
+
+// MetadataValidator performs the validation of updates to ConsensusMetadata during config updates to the channel.
+// NOTE: We expect the MetadataValidator interface to be optionally implemented by the Consenter implementation.
+//       If a Consenter does not implement MetadataValidator, we default to using a no-op MetadataValidator.
+type MetadataValidator interface {
+	// ValidateConsensusMetadata determines the validity of a ConsensusMetadata update during config
+	// updates on the channel.
+	// Since the ConsensusMetadata is specific to the consensus implementation (independent of the particular
+	// chain) this validation also needs to be implemented by the specific consensus implementation.
+	ValidateConsensusMetadata(oldMetadata, newMetadata []byte, newChannel bool) error
 }
 
 // Chain defines a way to inject messages for ordering.
@@ -71,12 +89,12 @@ type Chain interface {
 
 // ConsenterSupport provides the resources available to a Consenter implementation.
 type ConsenterSupport interface {
-	crypto.LocalSigner
+	identity.SignerSerializer
 	msgprocessor.Processor
 
 	// VerifyBlockSignature verifies a signature of a block with a given optional
 	// configuration (can be nil).
-	VerifyBlockSignature([]*cb.SignedData, *cb.ConfigEnvelope) error
+	VerifyBlockSignature([]*protoutil.SignedData, *cb.ConfigEnvelope) error
 
 	// BlockCutter returns the block cutting helper for this channel.
 	BlockCutter() blockcutter.Receiver
@@ -101,11 +119,11 @@ type ConsenterSupport interface {
 	// WriteConfigBlock commits a block to the ledger, and applies the config update inside.
 	WriteConfigBlock(block *cb.Block, encodedMetadataValue []byte)
 
-	// Sequence returns the current config squence.
+	// Sequence returns the current config sequence.
 	Sequence() uint64
 
-	// ChainID returns the channel ID this support is associated with.
-	ChainID() string
+	// ChannelID returns the channel ID this support is associated with.
+	ChannelID() string
 
 	// Height returns the number of blocks in the chain this channel is associated with.
 	Height() uint64
@@ -113,4 +131,14 @@ type ConsenterSupport interface {
 	// Append appends a new block to the ledger in its raw form,
 	// unlike WriteBlock that also mutates its metadata.
 	Append(block *cb.Block) error
+}
+
+// NoOpMetadataValidator implements a MetadataValidator that always returns nil error irrespecttive of the inputs.
+type NoOpMetadataValidator struct {
+}
+
+// ValidateConsensusMetadata determines the validity of a ConsensusMetadata update during config updates
+// on the channel, and it always returns nil error for the NoOpMetadataValidator implementation.
+func (n NoOpMetadataValidator) ValidateConsensusMetadata(oldMetadataBytes, newMetadataBytes []byte, newChannel bool) error {
+	return nil
 }

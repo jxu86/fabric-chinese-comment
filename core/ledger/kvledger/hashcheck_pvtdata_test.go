@@ -12,21 +12,53 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	"github.com/stretchr/testify/assert"
+	"github.com/hyperledger/fabric/protoutil"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConstructValidInvalidBlocksPvtData(t *testing.T) {
-	env := newTestEnv(t)
-	defer env.cleanup()
-	provider := testutilNewProvider(t)
+	conf, cleanup := testConfig(t)
+	defer cleanup()
+	nsCollBtlConfs := []*nsCollBtlConfig{
+		{
+			namespace: "ns-1",
+			btlConfig: map[string]uint64{
+				"coll-1": 0,
+				"coll-2": 0,
+			},
+		},
+		{
+			namespace: "ns-2",
+			btlConfig: map[string]uint64{
+				"coll-2": 0,
+			},
+		},
+		{
+			namespace: "ns-4",
+			btlConfig: map[string]uint64{
+				"coll-2": 0,
+			},
+		},
+		{
+			namespace: "ns-6",
+			btlConfig: map[string]uint64{
+				"coll-2": 0,
+			},
+		},
+	}
+	provider := testutilNewProviderWithCollectionConfig(
+		t,
+		nsCollBtlConfs,
+		conf,
+	)
 	defer provider.Close()
 
 	_, gb := testutil.NewBlockGenerator(t, "testLedger", false)
-	gbHash := gb.Header.Hash()
+	gbHash := protoutil.BlockHeaderHash(gb.Header)
 	lg, _ := provider.Create(gb)
 	defer lg.Close()
 
@@ -51,7 +83,7 @@ func TestConstructValidInvalidBlocksPvtData(t *testing.T) {
 
 	pubSimulationResults := &rwset.TxReadWriteSet{}
 	err := proto.Unmarshal(pubSimResBytesBlk1Tx7, pubSimulationResults)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	tx7PvtdataHash := pubSimulationResults.NsRwset[0].CollectionHashedRwset[0].PvtRwsetHash
 
 	// construct block1
@@ -81,10 +113,10 @@ func TestConstructValidInvalidBlocksPvtData(t *testing.T) {
 		Block:          blk1,
 		PvtData:        pvtDataBlk1,
 		MissingPvtData: missingData}
-	assert.NoError(t, lg.(*kvLedger).blockStore.CommitWithPvtData(blockAndPvtData1))
+	require.NoError(t, lg.(*kvLedger).commitToPvtAndBlockStore(blockAndPvtData1))
 
 	// construct pvtData from missing data in tx3, tx6, and tx7
-	blocksPvtData := []*ledger.BlockPvtData{
+	pvtdata := []*ledger.ReconciledPvtdata{
 		{
 			BlockNum: 1,
 			WriteSets: map[uint64]*ledger.TxPvtData{
@@ -103,16 +135,16 @@ func TestConstructValidInvalidBlocksPvtData(t *testing.T) {
 		},
 	}
 
-	blocksValidPvtData, hashMismatched, err := constructValidAndInvalidPvtData(blocksPvtData, lg.(*kvLedger).blockStore)
-	assert.NoError(t, err)
-	assert.Equal(t, len(expectedValidBlocksPvtData), len(blocksValidPvtData))
-	assert.ElementsMatch(t, expectedValidBlocksPvtData[1], blocksValidPvtData[1])
+	blocksValidPvtData, hashMismatched, err := constructValidAndInvalidPvtData(pvtdata, lg.(*kvLedger).blockStore)
+	require.NoError(t, err)
+	require.Equal(t, len(expectedValidBlocksPvtData), len(blocksValidPvtData))
+	require.ElementsMatch(t, expectedValidBlocksPvtData[1], blocksValidPvtData[1])
 	// should not include the pvtData passed for the tx7 even in hashmismatched as ns-6:coll-2 does not exist in tx7
-	assert.Len(t, hashMismatched, 0)
+	require.Len(t, hashMismatched, 0)
 
 	// construct pvtData from missing data in tx7 with wrong pvtData
-	wrongPvtDataBlk1Tx7, pubSimResBytesBlk1Tx7 = produceSamplePvtdata(t, 7, []string{"ns-1:coll-2"}, [][]byte{v6})
-	blocksPvtData = []*ledger.BlockPvtData{
+	wrongPvtDataBlk1Tx7, _ = produceSamplePvtdata(t, 7, []string{"ns-1:coll-2"}, [][]byte{v6})
+	pvtdata = []*ledger.ReconciledPvtdata{
 		{
 			BlockNum: 1,
 			WriteSets: map[uint64]*ledger.TxPvtData{
@@ -132,11 +164,11 @@ func TestConstructValidInvalidBlocksPvtData(t *testing.T) {
 		},
 	}
 
-	blocksValidPvtData, hashMismatches, err := constructValidAndInvalidPvtData(blocksPvtData, lg.(*kvLedger).blockStore)
-	assert.NoError(t, err)
-	assert.Len(t, blocksValidPvtData, 0)
+	blocksValidPvtData, hashMismatches, err := constructValidAndInvalidPvtData(pvtdata, lg.(*kvLedger).blockStore)
+	require.NoError(t, err)
+	require.Len(t, blocksValidPvtData, 0)
 
-	assert.ElementsMatch(t, expectedHashMismatches, hashMismatches)
+	require.ElementsMatch(t, expectedHashMismatches, hashMismatches)
 }
 
 func produceSamplePvtdata(t *testing.T, txNum uint64, nsColls []string, values [][]byte) (*ledger.TxPvtData, []byte) {
@@ -150,8 +182,66 @@ func produceSamplePvtdata(t *testing.T, txNum uint64, nsColls []string, values [
 		builder.AddToPvtAndHashedWriteSet(ns, coll, key, value)
 	}
 	simRes, err := builder.GetTxSimulationResults()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	pubSimulationResultsBytes, err := proto.Marshal(simRes.PubSimulationResults)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	return &ledger.TxPvtData{SeqInBlock: txNum, WriteSet: simRes.PvtSimulationResults}, pubSimulationResultsBytes
+}
+
+func TestRemoveCollFromTxPvtReadWriteSet(t *testing.T) {
+	txpvtrwset := testutilConstructSampleTxPvtRwset(
+		[]*testNsColls{
+			{ns: "ns-1", colls: []string{"coll-1", "coll-2"}},
+			{ns: "ns-2", colls: []string{"coll-3", "coll-4"}},
+		},
+	)
+
+	removeCollFromTxPvtReadWriteSet(txpvtrwset, "ns-1", "coll-1")
+	require.Equal(
+		t,
+		testutilConstructSampleTxPvtRwset(
+			[]*testNsColls{
+				{ns: "ns-1", colls: []string{"coll-2"}},
+				{ns: "ns-2", colls: []string{"coll-3", "coll-4"}},
+			},
+		),
+		txpvtrwset,
+	)
+
+	removeCollFromTxPvtReadWriteSet(txpvtrwset, "ns-1", "coll-2")
+	require.Equal(
+		t,
+		testutilConstructSampleTxPvtRwset(
+			[]*testNsColls{
+				{ns: "ns-2", colls: []string{"coll-3", "coll-4"}},
+			},
+		),
+		txpvtrwset,
+	)
+}
+
+func testutilConstructSampleTxPvtRwset(nsCollsList []*testNsColls) *rwset.TxPvtReadWriteSet {
+	txPvtRwset := &rwset.TxPvtReadWriteSet{}
+	for _, nsColls := range nsCollsList {
+		ns := nsColls.ns
+		nsdata := &rwset.NsPvtReadWriteSet{
+			Namespace:          ns,
+			CollectionPvtRwset: []*rwset.CollectionPvtReadWriteSet{},
+		}
+		txPvtRwset.NsPvtRwset = append(txPvtRwset.NsPvtRwset, nsdata)
+		for _, coll := range nsColls.colls {
+			nsdata.CollectionPvtRwset = append(nsdata.CollectionPvtRwset,
+				&rwset.CollectionPvtReadWriteSet{
+					CollectionName: coll,
+					Rwset:          []byte(fmt.Sprintf("pvtrwset-for-%s-%s", ns, coll)),
+				},
+			)
+		}
+	}
+	return txPvtRwset
+}
+
+type testNsColls struct {
+	ns    string
+	colls []string
 }

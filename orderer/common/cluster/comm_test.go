@@ -19,16 +19,17 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
+	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/common/metrics/metricsfakes"
-	comm_utils "github.com/hyperledger/fabric/core/comm"
+	comm_utils "github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/cluster/mocks"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
 	"github.com/onsi/gomega"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
@@ -211,8 +212,8 @@ func (cn *clusterNode) renewCertificates() {
 	cn.serverConfig.SecOpts.Certificate = serverKeyPair.Cert
 	cn.serverConfig.SecOpts.Key = serverKeyPair.Key
 
-	cn.dialer.ClientConfig.SecOpts.Key = clientKeyPair.Key
-	cn.dialer.ClientConfig.SecOpts.Certificate = clientKeyPair.Cert
+	cn.dialer.Config.SecOpts.Key = clientKeyPair.Key
+	cn.dialer.Config.SecOpts.Certificate = clientKeyPair.Cert
 }
 
 func newTestNodeWithMetrics(t *testing.T, metrics cluster.MetricsProvider, tlsConnGauge metrics.Gauge) *clusterNode {
@@ -225,7 +226,7 @@ func newTestNodeWithMetrics(t *testing.T, metrics cluster.MetricsProvider, tlsCo
 	clientConfig := comm_utils.ClientConfig{
 		AsyncConnect: true,
 		Timeout:      time.Hour,
-		SecOpts: &comm_utils.SecureOptions{
+		SecOpts: comm_utils.SecureOptions{
 			RequireClientCert: true,
 			Key:               clientKeyPair.Key,
 			Certificate:       clientKeyPair.Cert,
@@ -236,11 +237,11 @@ func newTestNodeWithMetrics(t *testing.T, metrics cluster.MetricsProvider, tlsCo
 	}
 
 	dialer := &cluster.PredicateDialer{
-		ClientConfig: clientConfig,
+		Config: clientConfig,
 	}
 
 	srvConfig := comm_utils.ServerConfig{
-		SecOpts: &comm_utils.SecureOptions{
+		SecOpts: comm_utils.SecureOptions{
 			Key:         serverKeyPair.Key,
 			Certificate: serverKeyPair.Cert,
 			UseTLS:      true,
@@ -266,6 +267,10 @@ func newTestNodeWithMetrics(t *testing.T, metrics cluster.MetricsProvider, tlsCo
 
 	tstSrv.freezeCond.L = &tstSrv.lock
 
+	compareCert := cluster.CachePublicKeyComparisons(func(a, b []byte) bool {
+		return crypto.CertificatesWithSamePublicKey(a, b) == nil
+	})
+
 	tstSrv.c = &cluster.Comm{
 		CertExpWarningThreshold: time.Hour,
 		SendBufferSize:          1,
@@ -275,6 +280,7 @@ func newTestNodeWithMetrics(t *testing.T, metrics cluster.MetricsProvider, tlsCo
 		ChanExt:                 channelExtractor,
 		Connections:             cluster.NewConnectionStore(dialer, tlsConnGauge),
 		Metrics:                 cluster.NewMetrics(metrics),
+		CompareCertificate:      compareCert,
 	}
 
 	orderer.RegisterClusterServer(gRPCServer.Server(), tstSrv)
@@ -287,8 +293,6 @@ func newTestNode(t *testing.T) *clusterNode {
 }
 
 func TestSendBigMessage(t *testing.T) {
-	t.Parallel()
-
 	// Scenario: Basic test that spawns 5 nodes and sends a big message
 	// from one of the nodes to the others.
 	// A receiver node's Step() server side method (which calls Recv)
@@ -371,7 +375,6 @@ func TestSendBigMessage(t *testing.T) {
 		err = stream.Send(wrappedMsg)
 		assert.NoError(t, err)
 		t.Log("Sending took", time.Since(t1))
-		t1 = time.Now()
 
 		// Unfreeze the node. It can now call Recv, and signal the messageReceived waitGroup.
 		node.unfreeze()
@@ -383,7 +386,6 @@ func TestSendBigMessage(t *testing.T) {
 }
 
 func TestBlockingSend(t *testing.T) {
-	t.Parallel()
 	// Scenario: Basic test that spawns 2 nodes and sends from the first node
 	// to the second node, three SubmitRequests, or three consensus requests.
 	// SubmitRequests should block, but consensus requests should not.
@@ -436,14 +438,13 @@ func TestBlockingSend(t *testing.T) {
 			fakeStream.On("Context", mock.Anything).Return(context.Background())
 			client.On("Step", mock.Anything).Return(fakeStream, nil).Once()
 
-			var unBlock sync.WaitGroup
-			unBlock.Add(1)
+			unBlock := make(chan struct{})
 			var sendInvoked sync.WaitGroup
 			sendInvoked.Add(1)
 			var once sync.Once
 			fakeStream.On("Send", mock.Anything).Run(func(_ mock.Arguments) {
 				once.Do(sendInvoked.Done)
-				unBlock.Wait()
+				<-unBlock
 			}).Return(errors.New("oops"))
 
 			stream, err := rm.NewStream(time.Hour)
@@ -466,7 +467,7 @@ func TestBlockingSend(t *testing.T) {
 			go func() {
 				time.Sleep(time.Second)
 				if testCase.streamUnblocks {
-					unBlock.Done()
+					close(unBlock)
 				}
 			}()
 
@@ -480,12 +481,15 @@ func TestBlockingSend(t *testing.T) {
 			elapsed := time.Since(t1)
 			t.Log("Elapsed time:", elapsed)
 			assert.True(t, elapsed > testCase.elapsedGreaterThan)
+
+			if !testCase.streamUnblocks {
+				close(unBlock)
+			}
 		})
 	}
 }
 
 func TestBasic(t *testing.T) {
-	t.Parallel()
 	// Scenario: Basic test that spawns 2 nodes and sends each other
 	// messages that are expected to be echoed back
 
@@ -503,12 +507,11 @@ func TestBasic(t *testing.T) {
 }
 
 func TestUnavailableHosts(t *testing.T) {
-	t.Parallel()
 	// Scenario: A node is configured to connect
 	// to a host that is down
 	node1 := newTestNode(t)
 
-	clientConfig := node1.dialer.ClientConfig
+	clientConfig := node1.dialer.Config
 	// The below timeout makes sure that connection establishment is done
 	// asynchronously. Had it been synchronous, the Remote() call would be
 	// blocked for an hour.
@@ -528,8 +531,6 @@ func TestUnavailableHosts(t *testing.T) {
 }
 
 func TestStreamAbort(t *testing.T) {
-	t.Parallel()
-
 	// Scenarios: node 1 is connected to node 2 in 2 channels,
 	// and the consumer of the communication calls receive.
 	// The two sub-scenarios happen:
@@ -614,7 +615,6 @@ func testStreamAbort(t *testing.T, node2 *clusterNode, newMembership []cluster.R
 }
 
 func TestDoubleReconfigure(t *testing.T) {
-	t.Parallel()
 	// Scenario: Basic test that spawns 2 nodes
 	// and configures node 1 twice, and checks that
 	// the remote stub for node 1 wasn't re-created in the second
@@ -638,13 +638,11 @@ func TestDoubleReconfigure(t *testing.T) {
 }
 
 func TestInvalidChannel(t *testing.T) {
-	t.Parallel()
 	// Scenario: node 1 it ordered to send a message on a channel
 	// that doesn't exist, and also receives a message, but
 	// the channel cannot be extracted from the message.
 
 	t.Run("channel doesn't exist", func(t *testing.T) {
-		t.Parallel()
 		node1 := newTestNode(t)
 		defer node1.stop()
 
@@ -653,7 +651,6 @@ func TestInvalidChannel(t *testing.T) {
 	})
 
 	t.Run("channel cannot be extracted", func(t *testing.T) {
-		t.Parallel()
 		node1 := newTestNode(t)
 		defer node1.stop()
 
@@ -683,7 +680,6 @@ func TestInvalidChannel(t *testing.T) {
 }
 
 func TestAbortRPC(t *testing.T) {
-	t.Parallel()
 	// Scenarios:
 	// (I) The node calls an RPC, and calls Abort() on the remote context
 	//  in parallel. The RPC should return even though the server-side call hasn't finished.
@@ -768,7 +764,6 @@ func testAbort(t *testing.T, abortFunc func(*cluster.RemoteContext), rpcTimeout 
 }
 
 func TestNoTLSCertificate(t *testing.T) {
-	t.Parallel()
 	// Scenario: The node is sent a message by another node that doesn't
 	// connect with mutual TLS, thus doesn't provide a TLS certificate
 	node1 := newTestNode(t)
@@ -779,7 +774,7 @@ func TestNoTLSCertificate(t *testing.T) {
 	clientConfig := comm_utils.ClientConfig{
 		AsyncConnect: true,
 		Timeout:      time.Millisecond * 100,
-		SecOpts: &comm_utils.SecureOptions{
+		SecOpts: comm_utils.SecureOptions{
 			ServerRootCAs: [][]byte{ca.CertBytes()},
 			UseTLS:        true,
 		},
@@ -790,7 +785,7 @@ func TestNoTLSCertificate(t *testing.T) {
 	var conn *grpc.ClientConn
 	gt := gomega.NewGomegaWithT(t)
 	gt.Eventually(func() (bool, error) {
-		conn, err = cl.NewConnection(node1.srv.Address(), "")
+		conn, err = cl.NewConnection(node1.srv.Address())
 		return true, err
 	}, time.Minute).Should(gomega.BeTrue())
 
@@ -805,7 +800,6 @@ func TestNoTLSCertificate(t *testing.T) {
 }
 
 func TestReconnect(t *testing.T) {
-	t.Parallel()
 	// Scenario: node 1 and node 2 are connected,
 	// and node 2 is taken offline.
 	// Node 1 tries to send a message to node 2 but fails,
@@ -815,7 +809,7 @@ func TestReconnect(t *testing.T) {
 
 	node1 := newTestNode(t)
 	defer node1.stop()
-	conf := node1.dialer.ClientConfig
+	conf := node1.dialer.Config
 	conf.Timeout = time.Hour
 
 	node2 := newTestNode(t)
@@ -857,7 +851,6 @@ func TestReconnect(t *testing.T) {
 }
 
 func TestRenewCertificates(t *testing.T) {
-	t.Parallel()
 	// Scenario: node 1 and node 2 are connected,
 	// and the certificates are renewed for both nodes
 	// at the same time.
@@ -913,7 +906,6 @@ func TestRenewCertificates(t *testing.T) {
 }
 
 func TestMembershipReconfiguration(t *testing.T) {
-	t.Parallel()
 	// Scenario: node 1 and node 2 are started up
 	// and node 2 is configured to know about node 1,
 	// without node1 knowing about node 2.
@@ -941,6 +933,7 @@ func TestMembershipReconfiguration(t *testing.T) {
 	}, time.Minute).Should(gomega.BeTrue())
 
 	stub, err := node2.c.Remote(testChannel, node1.nodeInfo.ID)
+	assert.NoError(t, err)
 
 	stream := assertEventualEstablishStream(t, stub)
 	err = stream.Send(wrapSubmitReq(testSubReq))
@@ -969,7 +962,6 @@ func TestMembershipReconfiguration(t *testing.T) {
 }
 
 func TestShutdown(t *testing.T) {
-	t.Parallel()
 	// Scenario: node 1 is shut down and as a result, can't
 	// send messages to anyone, nor can it be reconfigured
 
@@ -996,6 +988,7 @@ func TestShutdown(t *testing.T) {
 	}, time.Minute).Should(gomega.Succeed())
 
 	stub, err := node2.c.Remote(testChannel, node1.nodeInfo.ID)
+	assert.NoError(t, err)
 
 	// Therefore, sending a message doesn't succeed because node 1 rejected the configuration change
 	gt.Eventually(func() string {
@@ -1012,7 +1005,6 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestMultiChannelConfig(t *testing.T) {
-	t.Parallel()
 	// Scenario: node 1 is knows node 2 only in channel "foo"
 	// and knows node 3 only in channel "bar".
 	// Messages that are received, are routed according to their corresponding channels
@@ -1074,7 +1066,9 @@ func TestMultiChannelConfig(t *testing.T) {
 		assert.NoError(t, err)
 
 		assertEventualSendMessage(t, node2toNode1, &orderer.SubmitRequest{Channel: "foo"})
+		assert.NoError(t, err)
 		stream, err := node2toNode1.NewStream(time.Hour)
+		assert.NoError(t, err)
 		err = stream.Send(barReq)
 		assert.NoError(t, err)
 		_, err = stream.Recv()
@@ -1082,6 +1076,7 @@ func TestMultiChannelConfig(t *testing.T) {
 
 		assertEventualSendMessage(t, node3toNode1, &orderer.SubmitRequest{Channel: "bar"})
 		stream, err = node3toNode1.NewStream(time.Hour)
+		assert.NoError(t, err)
 		err = stream.Send(fooReq)
 		assert.NoError(t, err)
 		_, err = stream.Recv()
@@ -1090,7 +1085,6 @@ func TestMultiChannelConfig(t *testing.T) {
 }
 
 func TestConnectionFailure(t *testing.T) {
-	t.Parallel()
 	// Scenario: node 1 fails to connect to node 2.
 
 	node1 := newTestNode(t)
@@ -1142,8 +1136,6 @@ func (tm *testMetrics) initialize() {
 }
 
 func TestMetrics(t *testing.T) {
-	t.Parallel()
-
 	for _, testCase := range []struct {
 		name        string
 		runTest     func(node1, node2 *clusterNode, testMetrics *testMetrics)
@@ -1297,7 +1289,6 @@ func TestMetrics(t *testing.T) {
 }
 
 func TestCertExpirationWarningEgress(t *testing.T) {
-	t.Parallel()
 	// Scenario: Ensures that when certificates are due to expire,
 	// a warning is logged to the log.
 

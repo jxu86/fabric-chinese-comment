@@ -16,17 +16,17 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/discovery"
+	"github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/configtx/test"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
-	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 	"github.com/hyperledger/fabric/discovery/support/config"
 	"github.com/hyperledger/fabric/discovery/support/mocks"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/discovery"
-	"github.com/hyperledger/fabric/protos/msp"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/internal/configtxgen/encoder"
+	"github.com/hyperledger/fabric/internal/configtxgen/genesisconfig"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/onsi/gomega/gexec"
 	"github.com/stretchr/testify/assert"
 )
@@ -70,11 +70,11 @@ func TestMSPIDMapping(t *testing.T) {
 	os.Mkdir(dir, 0700)
 	defer os.RemoveAll(dir)
 
-	cryptogen, err := gexec.Build(filepath.Join("github.com", "hyperledger", "fabric", "common", "tools", "cryptogen"))
+	cryptogen, err := gexec.Build("github.com/hyperledger/fabric/cmd/cryptogen")
 	assert.NoError(t, err)
 	defer os.Remove(cryptogen)
 
-	idemixgen, err := gexec.Build(filepath.Join("github.com", "hyperledger", "fabric", "common", "tools", "idemixgen"))
+	idemixgen, err := gexec.Build("github.com/hyperledger/fabric/cmd/idemixgen")
 	assert.NoError(t, err)
 	defer os.Remove(idemixgen)
 
@@ -116,6 +116,7 @@ func TestMSPIDMapping(t *testing.T) {
 
 	cs := config.NewDiscoverySupport(fakeBlockGetter)
 	res, err := cs.Config("mychannel")
+	assert.NoError(t, err)
 
 	actualKeys := make(map[string]struct{})
 	for key := range res.Orderers {
@@ -291,25 +292,6 @@ func TestValidateConfigEnvelope(t *testing.T) {
 			},
 			containsError: "field Config.ChannelGroup.Values is nil",
 		},
-		{
-			name: "no OrdererAddressesKey in ChannelGroup Values",
-			ce: &common.ConfigEnvelope{
-				Config: &common.Config{
-					ChannelGroup: &common.ConfigGroup{
-						Values: map[string]*common.ConfigValue{},
-						Groups: map[string]*common.ConfigGroup{
-							channelconfig.ApplicationGroupKey: {
-								Groups: map[string]*common.ConfigGroup{},
-							},
-							channelconfig.OrdererGroupKey: {
-								Groups: map[string]*common.ConfigGroup{},
-							},
-						},
-					},
-				},
-			},
-			containsError: "field Config.ChannelGroup.Values is empty",
-		},
 	}
 
 	for _, test := range tests {
@@ -341,7 +323,7 @@ func TestOrdererEndpoints(t *testing.T) {
 		}, res.Orderers)
 	})
 
-	t.Run("Per org endpoints", func(t *testing.T) {
+	t.Run("Per org endpoints alongside global endpoints", func(t *testing.T) {
 		block, err := test.MakeGenesisBlock("mychannel")
 		assert.NoError(t, err)
 
@@ -361,38 +343,77 @@ func TestOrdererEndpoints(t *testing.T) {
 			"aBadOrg":    {},
 		}, res.Orderers)
 	})
+
+	t.Run("Per org endpoints without global endpoints", func(t *testing.T) {
+		block, err := test.MakeGenesisBlock("mychannel")
+		assert.NoError(t, err)
+
+		fakeBlockGetter := &mocks.ConfigBlockGetter{}
+		cs := config.NewDiscoverySupport(fakeBlockGetter)
+
+		fakeBlockGetter.GetCurrConfigBlockReturnsOnCall(0, block)
+
+		removeGlobalEndpoints(t, block)
+		injectAdditionalEndpointPair(t, block, "perOrgEndpoint:7050", "SampleOrg")
+		injectAdditionalEndpointPair(t, block, "endpointWithoutAPortName", "aBadOrg")
+
+		res, err := cs.Config("test")
+		assert.NoError(t, err)
+		assert.Equal(t, map[string]*discovery.Endpoints{
+			"SampleOrg": {Endpoint: []*discovery.Endpoint{{Host: "perOrgEndpoint", Port: 7050}}},
+			"aBadOrg":   {},
+		}, res.Orderers)
+	})
+}
+
+func removeGlobalEndpoints(t *testing.T, block *common.Block) {
+	// Unwrap the layers until we reach the orderer addresses
+	env, err := protoutil.ExtractEnvelope(block, 0)
+	assert.NoError(t, err)
+	payload := protoutil.UnmarshalPayloadOrPanic(env.Payload)
+	confEnv, err := configtx.UnmarshalConfigEnvelope(payload.Data)
+	assert.NoError(t, err)
+	// Remove the orderer addresses
+	delete(confEnv.Config.ChannelGroup.Values, channelconfig.OrdererAddressesKey)
+	// And put it back into the block
+	payload.Data = protoutil.MarshalOrPanic(confEnv)
+	env.Payload = protoutil.MarshalOrPanic(payload)
+	block.Data.Data[0] = protoutil.MarshalOrPanic(env)
 }
 
 func injectGlobalOrdererEndpoint(t *testing.T, block *common.Block, endpoint string) {
 	ordererAddresses := channelconfig.OrdererAddressesValue([]string{endpoint})
 	// Unwrap the layers until we reach the orderer addresses
-	env, err := utils.ExtractEnvelope(block, 0)
+	env, err := protoutil.ExtractEnvelope(block, 0)
 	assert.NoError(t, err)
-	payload, err := utils.ExtractPayload(env)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	assert.NoError(t, err)
 	confEnv, err := configtx.UnmarshalConfigEnvelope(payload.Data)
 	assert.NoError(t, err)
 	// Replace the orderer addresses
-	confEnv.Config.ChannelGroup.Values[ordererAddresses.Key()].Value = utils.MarshalOrPanic(ordererAddresses.Value())
+	confEnv.Config.ChannelGroup.Values[ordererAddresses.Key()] = &common.ConfigValue{
+		Value:     protoutil.MarshalOrPanic(ordererAddresses.Value()),
+		ModPolicy: "/Channel/Orderer/Admins",
+	}
 	// Remove the per org addresses, if applicable
 	ordererGrps := confEnv.Config.ChannelGroup.Groups[channelconfig.OrdererGroupKey].Groups
 	for _, grp := range ordererGrps {
-		if grp.Values["Endpoints"] == nil {
+		if grp.Values[channelconfig.EndpointsKey] == nil {
 			continue
 		}
-		grp.Values["Endpoints"].Value = nil
+		grp.Values[channelconfig.EndpointsKey].Value = nil
 	}
 	// And put it back into the block
-	payload.Data = utils.MarshalOrPanic(confEnv)
-	env.Payload = utils.MarshalOrPanic(payload)
-	block.Data.Data[0] = utils.MarshalOrPanic(env)
+	payload.Data = protoutil.MarshalOrPanic(confEnv)
+	env.Payload = protoutil.MarshalOrPanic(payload)
+	block.Data.Data[0] = protoutil.MarshalOrPanic(env)
 }
 
 func injectAdditionalEndpointPair(t *testing.T, block *common.Block, endpoint string, orgName string) {
 	// Unwrap the layers until we reach the orderer addresses
-	env, err := utils.ExtractEnvelope(block, 0)
+	env, err := protoutil.ExtractEnvelope(block, 0)
 	assert.NoError(t, err)
-	payload, err := utils.ExtractPayload(env)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	assert.NoError(t, err)
 	confEnv, err := configtx.UnmarshalConfigEnvelope(payload.Data)
 	assert.NoError(t, err)
@@ -419,8 +440,8 @@ func injectAdditionalEndpointPair(t *testing.T, block *common.Block, endpoint st
 	fabricConfig.Name = orgName
 
 	// Pack the MSP config back into the config
-	secondOrdererConfig.Values[channelconfig.MSPKey].Value = utils.MarshalOrPanic(&msp.MSPConfig{
-		Config: utils.MarshalOrPanic(fabricConfig),
+	secondOrdererConfig.Values[channelconfig.MSPKey].Value = protoutil.MarshalOrPanic(&msp.MSPConfig{
+		Config: protoutil.MarshalOrPanic(fabricConfig),
 		Type:   mspConfig.Type,
 	})
 
@@ -428,10 +449,10 @@ func injectAdditionalEndpointPair(t *testing.T, block *common.Block, endpoint st
 	ordererOrgProtos := &common.OrdererAddresses{
 		Addresses: []string{endpoint},
 	}
-	secondOrdererConfig.Values["Endpoints"].Value = utils.MarshalOrPanic(ordererOrgProtos)
+	secondOrdererConfig.Values[channelconfig.EndpointsKey].Value = protoutil.MarshalOrPanic(ordererOrgProtos)
 
 	// Fold everything back into the block
-	payload.Data = utils.MarshalOrPanic(confEnv)
-	env.Payload = utils.MarshalOrPanic(payload)
-	block.Data.Data[0] = utils.MarshalOrPanic(env)
+	payload.Data = protoutil.MarshalOrPanic(confEnv)
+	env.Payload = protoutil.MarshalOrPanic(payload)
+	block.Data.Data[0] = protoutil.MarshalOrPanic(env)
 }

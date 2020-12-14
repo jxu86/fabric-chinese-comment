@@ -7,145 +7,212 @@ SPDX-License-Identifier: Apache-2.0
 package privacyenabledstate
 
 import (
-	"fmt"
+	"io/ioutil"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/hyperledger/fabric/common/metrics/disabled"
+	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/bookkeeping"
+	testmock "github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate/mock"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/statecouchdb"
-	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/stateleveldb"
 	"github.com/hyperledger/fabric/core/ledger/mock"
-	"github.com/hyperledger/fabric/integration/runner"
-	"github.com/spf13/viper"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestEnv - an interface that a test environment implements
 type TestEnv interface {
+	StartExternalResource()
 	Init(t testing.TB)
-	GetDBHandle(id string) DB
+	GetDBHandle(id string) *DB
 	GetName() string
+	DBValueFormat() byte
+	DecodeDBValue(dbVal []byte) statedb.VersionedValue
 	Cleanup()
+	StopExternalResource()
 }
 
 // Tests will be run against each environment in this array
-// For example, to skip CouchDB tests, remove &couchDBLockBasedEnv{}
-//var testEnvs = []testEnv{&levelDBCommonStorageTestEnv{}, &couchDBCommonStorageTestEnv{}}
-var testEnvs = []TestEnv{&LevelDBCommonStorageTestEnv{}, &CouchDBCommonStorageTestEnv{}}
+// For example, to skip CouchDB tests, remove &CouchDBLockBasedEnv{}
+var testEnvs = []TestEnv{&LevelDBTestEnv{}, &CouchDBTestEnv{}}
 
 ///////////// LevelDB Environment //////////////
 
-// LevelDBCommonStorageTestEnv implements TestEnv interface for leveldb based storage
-type LevelDBCommonStorageTestEnv struct {
+// LevelDBTestEnv implements TestEnv interface for leveldb based storage
+type LevelDBTestEnv struct {
 	t                 testing.TB
-	provider          DBProvider
+	provider          *DBProvider
 	bookkeeperTestEnv *bookkeeping.TestEnv
+	dbPath            string
 }
 
 // Init implements corresponding function from interface TestEnv
-func (env *LevelDBCommonStorageTestEnv) Init(t testing.TB) {
-	viper.Set("ledger.state.stateDatabase", "")
-	removeDBPath(t)
+func (env *LevelDBTestEnv) Init(t testing.TB) {
+	dbPath, err := ioutil.TempDir("", "cstestenv")
+	if err != nil {
+		t.Fatalf("Failed to create level db storage directory: %s", err)
+	}
 	env.bookkeeperTestEnv = bookkeeping.NewTestEnv(t)
-	dbProvider, err := NewCommonStorageDBProvider(env.bookkeeperTestEnv.TestProvider, &disabled.Provider{}, &mock.HealthCheckRegistry{})
-	assert.NoError(t, err)
+	dbProvider, err := NewDBProvider(
+		env.bookkeeperTestEnv.TestProvider,
+		&disabled.Provider{},
+		&mock.HealthCheckRegistry{},
+		&StateDBConfig{
+			&ledger.StateDBConfig{},
+			dbPath,
+		},
+		[]string{"lscc", "_lifecycle"},
+	)
+	require.NoError(t, err)
 	env.t = t
 	env.provider = dbProvider
+	env.dbPath = dbPath
+}
+
+// StartExternalResource will be an empty implementation for levelDB test environment.
+func (env *LevelDBTestEnv) StartExternalResource() {
+	// empty implementation
+}
+
+// StopExternalResource will be an empty implementation for levelDB test environment.
+func (env *LevelDBTestEnv) StopExternalResource() {
+	// empty implementation
 }
 
 // GetDBHandle implements corresponding function from interface TestEnv
-func (env *LevelDBCommonStorageTestEnv) GetDBHandle(id string) DB {
-	db, err := env.provider.GetDBHandle(id)
-	assert.NoError(env.t, err)
+func (env *LevelDBTestEnv) GetDBHandle(id string) *DB {
+	db, err := env.provider.GetDBHandle(id, nil)
+	require.NoError(env.t, err)
 	return db
 }
 
 // GetName implements corresponding function from interface TestEnv
-func (env *LevelDBCommonStorageTestEnv) GetName() string {
-	return "levelDBCommonStorageTestEnv"
+func (env *LevelDBTestEnv) GetName() string {
+	return "levelDBTestEnv"
+}
+
+// DBValueFormat returns the format used by the stateleveldb for dbvalue
+func (env *LevelDBTestEnv) DBValueFormat() byte {
+	return stateleveldb.TestEnvDBValueformat
+}
+
+// DecodeDBValue decodes the dbvalue bytes for tests
+func (env *LevelDBTestEnv) DecodeDBValue(dbVal []byte) statedb.VersionedValue {
+	vv, err := stateleveldb.TestEnvDBValueDecoder(dbVal)
+	require.NoError(env.t, err)
+	return *vv
 }
 
 // Cleanup implements corresponding function from interface TestEnv
-func (env *LevelDBCommonStorageTestEnv) Cleanup() {
+func (env *LevelDBTestEnv) Cleanup() {
 	env.provider.Close()
 	env.bookkeeperTestEnv.Cleanup()
-	removeDBPath(env.t)
+	os.RemoveAll(env.dbPath)
 }
 
 ///////////// CouchDB Environment //////////////
 
-// CouchDBCommonStorageTestEnv implements TestEnv interface for couchdb based storage
-type CouchDBCommonStorageTestEnv struct {
+// CouchDBTestEnv implements TestEnv interface for couchdb based storage
+type CouchDBTestEnv struct {
+	couchAddress      string
 	t                 testing.TB
-	provider          DBProvider
+	provider          *DBProvider
 	bookkeeperTestEnv *bookkeeping.TestEnv
+	redoPath          string
 	couchCleanup      func()
+	couchDBConfig     *ledger.CouchDBConfig
 }
 
-func (env *CouchDBCommonStorageTestEnv) setupCouch() string {
-	externalCouch, set := os.LookupEnv("COUCHDB_ADDR")
-	if set {
-		env.couchCleanup = func() {}
-		return externalCouch
+// StartExternalResource starts external couchDB resources.
+func (env *CouchDBTestEnv) StartExternalResource() {
+	if env.couchAddress != "" {
+		return
 	}
+	env.couchAddress, env.couchCleanup = statecouchdb.StartCouchDB(env.t.(*testing.T), nil)
+}
 
-	couchDB := &runner.CouchDB{}
-	if err := couchDB.Start(); err != nil {
-		err := fmt.Errorf("failed to start couchDB: %s", err)
-		panic(err)
+// StopExternalResource stops external couchDB resources.
+func (env *CouchDBTestEnv) StopExternalResource() {
+	if env.couchAddress != "" {
+		env.couchCleanup()
 	}
-	env.couchCleanup = func() { couchDB.Stop() }
-	return couchDB.Address()
 }
 
 // Init implements corresponding function from interface TestEnv
-func (env *CouchDBCommonStorageTestEnv) Init(t testing.TB) {
-	viper.Set("ledger.state.stateDatabase", "CouchDB")
-	couchAddr := env.setupCouch()
-	viper.Set("ledger.state.couchDBConfig.couchDBAddress", couchAddr)
-	// Replace with correct username/password such as
-	// admin/admin if user security is enabled on couchdb.
-	viper.Set("ledger.state.couchDBConfig.username", "")
-	viper.Set("ledger.state.couchDBConfig.password", "")
-	viper.Set("ledger.state.couchDBConfig.maxRetries", 3)
-	viper.Set("ledger.state.couchDBConfig.maxRetriesOnStartup", 20)
-	viper.Set("ledger.state.couchDBConfig.requestTimeout", time.Second*35)
+func (env *CouchDBTestEnv) Init(t testing.TB) {
+	redoPath, err := ioutil.TempDir("", "pestate")
+	if err != nil {
+		t.Fatalf("Failed to create redo log directory: %s", err)
+	}
+
+	env.t = t
+	env.StartExternalResource()
+
+	stateDBConfig := &StateDBConfig{
+		StateDBConfig: &ledger.StateDBConfig{
+			StateDatabase: "CouchDB",
+			CouchDB: &ledger.CouchDBConfig{
+				Address:             env.couchAddress,
+				Username:            "admin",
+				Password:            "adminpw",
+				MaxRetries:          3,
+				MaxRetriesOnStartup: 20,
+				RequestTimeout:      35 * time.Second,
+				InternalQueryLimit:  1000,
+				MaxBatchUpdateSize:  1000,
+				RedoLogPath:         redoPath,
+			},
+		},
+		LevelDBPath: "",
+	}
 
 	env.bookkeeperTestEnv = bookkeeping.NewTestEnv(t)
-	dbProvider, err := NewCommonStorageDBProvider(env.bookkeeperTestEnv.TestProvider, &disabled.Provider{}, &mock.HealthCheckRegistry{})
-	assert.NoError(t, err)
-	env.t = t
+	dbProvider, err := NewDBProvider(
+		env.bookkeeperTestEnv.TestProvider,
+		&disabled.Provider{},
+		&mock.HealthCheckRegistry{},
+		stateDBConfig,
+		[]string{"lscc", "_lifecycle"},
+	)
+	require.NoError(t, err)
 	env.provider = dbProvider
+	env.redoPath = redoPath
+	env.couchDBConfig = stateDBConfig.CouchDB
 }
 
 // GetDBHandle implements corresponding function from interface TestEnv
-func (env *CouchDBCommonStorageTestEnv) GetDBHandle(id string) DB {
-	db, err := env.provider.GetDBHandle(id)
-	assert.NoError(env.t, err)
+func (env *CouchDBTestEnv) GetDBHandle(id string) *DB {
+	db, err := env.provider.GetDBHandle(id, &testmock.ChannelInfoProvider{})
+	require.NoError(env.t, err)
 	return db
 }
 
 // GetName implements corresponding function from interface TestEnv
-func (env *CouchDBCommonStorageTestEnv) GetName() string {
-	return "couchDBCommonStorageTestEnv"
+func (env *CouchDBTestEnv) GetName() string {
+	return "couchDBTestEnv"
+}
+
+// DBValueFormat returns the format used by the stateleveldb for dbvalue
+// Not yet implemented
+func (env *CouchDBTestEnv) DBValueFormat() byte {
+	return byte(0) //To be implemented
+}
+
+// DecodeDBValue decodes the dbvalue bytes for tests
+// Not yet implemented
+func (env *CouchDBTestEnv) DecodeDBValue(dbVal []byte) statedb.VersionedValue {
+	return statedb.VersionedValue{} //To be implemented
 }
 
 // Cleanup implements corresponding function from interface TestEnv
-func (env *CouchDBCommonStorageTestEnv) Cleanup() {
-	csdbProvider, _ := env.provider.(*CommonStorageDBProvider)
-	statecouchdb.CleanupDB(env.t, csdbProvider.VersionedDBProvider)
-
+func (env *CouchDBTestEnv) Cleanup() {
+	if env.provider != nil {
+		require.NoError(env.t, statecouchdb.DropApplicationDBs(env.couchDBConfig))
+	}
+	os.RemoveAll(env.redoPath)
 	env.bookkeeperTestEnv.Cleanup()
 	env.provider.Close()
-	env.couchCleanup()
-}
-
-func removeDBPath(t testing.TB) {
-	dbPath := ledgerconfig.GetStateLevelDBPath()
-	if err := os.RemoveAll(dbPath); err != nil {
-		t.Fatalf("Err: %s", err)
-		t.FailNow()
-	}
 }

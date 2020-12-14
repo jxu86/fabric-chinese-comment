@@ -44,7 +44,7 @@ var _ = Describe("Health", func() {
 		config := nwo.BasicKafka()
 		config.Consensus.Brokers = 3
 
-		network = nwo.New(config, testDir, client, BasePort(), components)
+		network = nwo.New(config, testDir, client, StartPort(), components)
 		network.GenerateConfigTree()
 		network.Bootstrap()
 	})
@@ -58,28 +58,6 @@ var _ = Describe("Health", func() {
 			network.Cleanup()
 		}
 		os.RemoveAll(testDir)
-	})
-
-	Context("when the docker config is bad", func() {
-		It("fails the health check", func() {
-			peer := network.Peer("Org1", "peer0")
-			core := network.ReadPeerConfig(peer)
-			core.VM.Endpoint = "127.0.0.1:0" // bad endpoint
-			network.WritePeerConfig(peer, core)
-
-			peerRunner := network.PeerRunner(peer)
-			process = ginkgomon.Invoke(peerRunner)
-			Eventually(process.Ready()).Should(BeClosed())
-
-			authClient, _ := PeerOperationalClients(network, peer)
-			healthURL := fmt.Sprintf("https://127.0.0.1:%d/healthz", network.PeerPort(peer, nwo.OperationsPort))
-			statusCode, status := DoHealthCheck(authClient, healthURL)
-			Expect(statusCode).To(Equal(http.StatusServiceUnavailable))
-			Expect(status.Status).To(Equal("Service Unavailable"))
-			Expect(status.FailedChecks).To(ConsistOf(
-				healthz.FailedCheck{Component: "docker", Reason: "failed to connect to Docker daemon: invalid endpoint"},
-			))
-		})
 	})
 
 	Describe("CouchDB health checks", func() {
@@ -107,7 +85,7 @@ var _ = Describe("Health", func() {
 
 			peerRunner := network.PeerRunner(peer)
 			process = ginkgomon.Invoke(peerRunner)
-			Eventually(process.Ready()).Should(BeClosed())
+			Eventually(process.Ready(), network.EventuallyTimeout).Should(BeClosed())
 
 			authClient, _ = PeerOperationalClients(network, peer)
 			healthURL = fmt.Sprintf("https://127.0.0.1:%d/healthz", network.PeerPort(peer, nwo.OperationsPort))
@@ -144,9 +122,10 @@ var _ = Describe("Health", func() {
 					return statusCode
 				}, network.EventuallyTimeout).Should(Equal(http.StatusServiceUnavailable))
 				statusCode, status = DoHealthCheck(authClient, healthURL)
+				Expect(statusCode).To(Equal(http.StatusServiceUnavailable))
 				Expect(status.Status).To(Equal("Service Unavailable"))
 				Expect(status.FailedChecks[0].Component).To(Equal("couchdb"))
-				Expect(status.FailedChecks[0].Reason).Should((HavePrefix(fmt.Sprintf("failed to connect to couch db [Head http://%s: dial tcp %s: ", couchAddr, couchAddr))))
+				Expect(status.FailedChecks[0].Reason).To(MatchRegexp(fmt.Sprintf(`failed to connect to couch db \[http error calling couchdb: Head "?http://%s"?: dial tcp %s: .*\]`, couchAddr, couchAddr)))
 			})
 		})
 	})
@@ -261,7 +240,7 @@ func DoHealthCheck(client *http.Client, url string) (int, *healthz.HealthStatus)
 	}
 
 	healthStatus := &healthz.HealthStatus{}
-	err = json.Unmarshal(bodyBytes, healthStatus)
+	err = json.Unmarshal(bodyBytes, &healthStatus)
 	Expect(err).NotTo(HaveOccurred())
 
 	return resp.StatusCode, healthStatus

@@ -1,6 +1,3 @@
-// +build go1.9,linux,cgo go1.10,darwin,cgo
-// +build !ppc64le
-
 /*
 Copyright SecureKey Technologies Inc. All Rights Reserved.
 
@@ -18,9 +15,9 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/core/handlers/endorsement/api"
-	"github.com/hyperledger/fabric/core/handlers/validation/api"
-	"github.com/hyperledger/fabric/protos/peer"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	endorsement "github.com/hyperledger/fabric/core/handlers/endorsement/api"
+	validation "github.com/hyperledger/fabric/core/handlers/validation/api"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -60,7 +57,7 @@ func TestLoadAuthPlugin(t *testing.T) {
 	assert.Len(t, testReg.filters, 1, "Expected filter to be registered")
 
 	testReg.filters[0].Init(endorser)
-	testReg.filters[0].ProcessProposal(nil, nil)
+	testReg.filters[0].ProcessProposal(context.TODO(), nil)
 	assert.True(t, endorser.invoked, "Expected filter to invoke endorser on invoke")
 }
 

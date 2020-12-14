@@ -2,7 +2,7 @@
 
 package mocks
 
-import common "github.com/hyperledger/fabric/protos/common"
+import common "github.com/hyperledger/fabric-protos-go/common"
 import ledger "github.com/hyperledger/fabric/core/ledger"
 import mock "github.com/stretchr/testify/mock"
 
@@ -16,31 +16,8 @@ func (_m *Committer) Close() {
 	_m.Called()
 }
 
-// CommitPvtDataOfOldBlocks provides a mock function with given fields: blockPvtData
-func (_m *Committer) CommitPvtDataOfOldBlocks(blockPvtData []*ledger.BlockPvtData) ([]*ledger.PvtdataHashMismatch, error) {
-	ret := _m.Called(blockPvtData)
-
-	var r0 []*ledger.PvtdataHashMismatch
-	if rf, ok := ret.Get(0).(func([]*ledger.BlockPvtData) []*ledger.PvtdataHashMismatch); ok {
-		r0 = rf(blockPvtData)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]*ledger.PvtdataHashMismatch)
-		}
-	}
-
-	var r1 error
-	if rf, ok := ret.Get(1).(func([]*ledger.BlockPvtData) error); ok {
-		r1 = rf(blockPvtData)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// CommitWithPvtData provides a mock function with given fields: blockAndPvtData, commitOpts
-func (_m *Committer) CommitWithPvtData(blockAndPvtData *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error {
+// CommitLegacy provides a mock function with given fields: blockAndPvtData, commitOpts
+func (_m *Committer) CommitLegacy(blockAndPvtData *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error {
 	ret := _m.Called(blockAndPvtData, commitOpts)
 
 	var r0 error
@@ -51,6 +28,29 @@ func (_m *Committer) CommitWithPvtData(blockAndPvtData *ledger.BlockAndPvtData, 
 	}
 
 	return r0
+}
+
+// CommitPvtDataOfOldBlocks provides a mock function with given fields: reconciledPvtdata, unreconciled
+func (_m *Committer) CommitPvtDataOfOldBlocks(reconciledPvtdata []*ledger.ReconciledPvtdata, unreconciled ledger.MissingPvtDataInfo) ([]*ledger.PvtdataHashMismatch, error) {
+	ret := _m.Called(reconciledPvtdata, unreconciled)
+
+	var r0 []*ledger.PvtdataHashMismatch
+	if rf, ok := ret.Get(0).(func([]*ledger.ReconciledPvtdata, ledger.MissingPvtDataInfo) []*ledger.PvtdataHashMismatch); ok {
+		r0 = rf(reconciledPvtdata, unreconciled)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]*ledger.PvtdataHashMismatch)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func([]*ledger.ReconciledPvtdata, ledger.MissingPvtDataInfo) error); ok {
+		r1 = rf(reconciledPvtdata, unreconciled)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
 }
 
 // DoesPvtDataInfoExistInLedger provides a mock function with given fields: blockNum

@@ -10,15 +10,15 @@ values.
 
 In this topic, we're going to cover:
 
-* [What is a Ledger?](#what-is-a-ledger?)
+* [What is a Ledger?](#what-is-a-ledger)
 * [Storing facts about business objects](#ledgers-facts-and-states)
-* [A blockchain ledger](#a-blockchain-ledger)
+* [A blockchain ledger](#the-ledger)
 * [The world state](#world-state)
 * [The blockchain data structure](#blockchain)
 * [How blocks are stored in a blockchain](#blocks)
 * [Transactions](#transactions)
 * [World state database options](#world-state-database-options)
-* [The **Fabcar** example ledger](#example-ledger-fabcar)
+* [The **Basic** example ledger](#example-ledger-basic-asset-transfer)
 * [Ledgers and namespaces](#namespaces)
 * [Ledgers and channels](#channels)
 
@@ -40,7 +40,7 @@ is motivated by these same two concerns -- to present the current value of a set
 of ledger states, and to capture the history of the transactions that determined
 these states.
 
-## Ledgers, Facts and States
+## Ledgers, Facts, and States
 
 A ledger doesn't literally store business objects -- instead it stores **facts**
 about those objects. When we say "we store a business object in a ledger" what
@@ -66,13 +66,12 @@ In Hyperledger Fabric, a ledger consists of two distinct, though related, parts
 -- a world state and a blockchain. Each of these represents a set of facts about
 a set of business objects.
 
-Firstly, there's a **world state** -- a database that holds a cache of the
-**current values** of a set of ledger states. The world state makes it easy for
-a program to directly access the current value of a state rather than having to
-calculate it by traversing the entire transaction log. Ledger states are, by
-default, expressed as **key-value** pairs, and we'll see later how Hyperledger
-Fabric provides flexibility in this regard. The world state can change
-frequently, as states can be created, updated and deleted.
+Firstly, there's a **world state** -- a database that holds **current values**
+of a set of ledger states. The world state makes it easy for a program to directly
+access the current value of a state rather than having to calculate it by traversing
+the entire transaction log. Ledger states are, by default, expressed as **key-value** pairs,
+and we'll see later how Hyperledger Fabric provides flexibility in this regard.
+The world state can change frequently, as states can be created, updated and deleted.
 
 Secondly, there's a **blockchain** -- a transaction log that records all the
 changes that have resulted in the current the world state. Transactions are
@@ -134,8 +133,8 @@ not result in a change of world state. You can read more about how applications
 use [smart contracts](../smartcontract/smartcontract.html), and how to [develop
 applications](../developapps/developing_applications.html).
 
-You'll also notice that a state has an version number, and in the diagram above,
-states CAR1 and CAR2 are at their starting versions, 0. The version number for
+You'll also notice that a state has a version number, and in the diagram above,
+states CAR1 and CAR2 are at their starting versions, 0. The version number is for
 internal use by Hyperledger Fabric, and is incremented every time the state
 changes. The version is checked whenever the state is updated to make sure the
 current states matches the version at the time of endorsement. This ensures that
@@ -166,13 +165,12 @@ what's important is that block sequencing, as well as transaction sequencing
 within blocks, is established when blocks are first created by a Hyperledger
 Fabric component called the **ordering service**.
 
-Each block's header includes a hash of the block's transactions, as well a copy
-of the hash of the prior block's header. In this way, all transactions on the
-ledger are sequenced and cryptographically linked together. This hashing and
-linking makes the ledger data very secure. Even if one node hosting the ledger
-was tampered with, it would not be able to convince all the other nodes that it
-has the 'correct' blockchain because the ledger is distributed throughout a
-network of independent nodes.
+Each block's header includes a hash of the block's transactions, as well a hash
+of the prior block's header. In this way, all transactions on the ledger are sequenced
+and cryptographically linked together. This hashing and linking makes the ledger data
+very secure. Even if one node hosting the ledger was tampered with, it would not be able to
+convince all the other nodes that it has the 'correct' blockchain because the ledger is
+distributed throughout a network of independent nodes.
 
 The blockchain is always implemented as a file, in contrast to the world state,
 which uses a database. This is a sensible design choice as the blockchain data
@@ -189,9 +187,9 @@ In the above diagram, we can see that **block** B2 has a **block data** D2 which
 contains all its transactions: T5, T6, T7.
 
 Most importantly, B2 has a **block header** H2, which contains a cryptographic
-**hash** of all the transactions in D2 as well as with the equivalent hash from
-the previous block B1. In this way, blocks are inextricably and immutably linked
-to each other, which the term **blockchain** so neatly captures!
+**hash** of all the transactions in D2 as well as a hash of H1. In this way,
+blocks are inextricably and immutably linked to each other, which the term **blockchain**
+so neatly captures!
 
 Finally, as you can see in the diagram, the first block in the blockchain is
 called the **genesis block**.  It's the starting point for the ledger, though it
@@ -215,8 +213,7 @@ sections
   * **Current Block Hash**: The hash of all the transactions contained in the
   current block.
 
-  * **Previous Block Hash**: A copy of the hash from the previous block in the
-  blockchain.
+  * **Previous Block Header Hash**: The hash from the previous block header.
 
   These fields are internally derived by cryptographically hashing the block
   data. They ensure that each and every block is inextricably linked to its
@@ -224,7 +221,7 @@ sections
 
   ![ledger.blocks](./ledger.diagram.4.png) *Block header details. The header H2
   of block B2 consists of block number 2, the hash CH2 of the current block data
-  D2, and a copy of a hash PH1 from the previous block, block number 1.*
+  D2, and the hash of the prior block header H1.*
 
 
 * **Block Data**
@@ -237,11 +234,13 @@ sections
 
 * **Block Metadata**
 
-  This section contains the time when the block was written, as well as the
-  certificate, public key and signature of the block writer. Subsequently, the
-  block committer also adds a valid/invalid indicator for every transaction,
-  though this information is not included in the hash, as that is created when
-  the block is created.
+  This section contains the certificate and signature of the block creator which is used to verify
+  the block by network nodes.
+  Subsequently, the block committer adds a valid/invalid indicator for every transaction into
+  a bitmap that also resides in the block metadata, as well as a hash of the cumulative state updates
+  up until and including that block, in order to detect a state fork.
+  Unlike the block data  and header fields, this section is not an input to the block hash computation.
+
 
 ## Transactions
 
@@ -314,7 +313,7 @@ implemented. Options for the world state database currently include LevelDB and
 CouchDB.
 
 LevelDB is the default and is particularly appropriate when ledger states are
-simple key-value pairs. A LevelDB database is closely co-located with a network
+simple key-value pairs. A LevelDB database is co-located with the peer
 node -- it is embedded within the same operating system process.
 
 CouchDB is a particularly appropriate choice when ledger states are structured
@@ -331,23 +330,23 @@ graph store, or a temporal database.  This provides great flexibility in the
 types of ledger states that can be efficiently accessed, allowing Hyperledger
 Fabric to address many different types of problems.
 
-## Example Ledger: fabcar
+## Example Ledger: Basic Asset Transfer 
 
 As we end this topic on the ledger, let's have a look at a sample ledger. If
-you've run the [fabcar sample application](../write_first_app.html), then you've
+you've run the [basic asset transfer sample application](../write_first_app.html), then you've
 created this ledger.
 
-The fabcar sample app creates a set of 10 cars each with a unique identity; a
-different color, make, model and owner. Here's what the ledger looks like after
-the first four cars have been created.
+The basic sample app creates a set of 6 assets each with a unique identity; a
+different color, size, owner, and appraised value. Here's what the ledger looks like after
+the first four assets have been created.
 
 ![ledger.transaction](./ledger.diagram.6.png) *The ledger, L, comprises a world
-state, W and a blockchain, B. W contains four states with keys: CAR1, CAR2, CAR3
-and CAR4. B contains two blocks, 0 and 1. Block 1 contains four transactions:
+state, W and a blockchain, B. W contains four states with keys: ASSET1, ASSET2, ASSET3,
+and ASSET4. B contains two blocks, 0 and 1. Block 1 contains four transactions:
 T1, T2, T3, T4.*
 
-We can see that the world state contains states that correspond to CAR0, CAR1,
-CAR2 and CAR3. CAR0 has a value which indicates that it is a blue Toyota Prius,
+We can see that the world state contains states that correspond to ASSET1,
+ASSET2, ASSET3, and ASSET4. ASSET1 has a value which indicates that it is a blue with size 5,
 currently owned by Tomoko, and we can see similar states and values for the
 other cars. Moreover, we can see that all car states are at version number 0,
 indicating that this is their starting version number -- they have not been
@@ -356,7 +355,7 @@ updated since they were created.
 We can also see that the blockchain contains two blocks.  Block 0 is the genesis
 block, though it does not contain any transactions that relate to cars. Block 1
 however, contains transactions T1, T2, T3, T4 and these correspond to
-transactions that created the initial states for CAR0 to CAR3 in the world
+transactions that created the initial states for ASSET1 to ASSET4 in the world
 state. We can see that block 1 is linked to block 0.
 
 We have not shown the other fields in the blocks or transactions, specifically
@@ -376,7 +375,7 @@ the same chaincode can access a given namespace.
 
 A blockchain is not namespaced. It contains transactions from many different
 smart contract namespaces. You can read more about chaincode namespaces in this
-[topic](./developapps/chaincodenamespace.html).
+[topic](../developapps/chaincodenamespace.html).
 
 Let's now look at how the concept of a namespace is applied within a Hyperledger
 Fabric channel.
@@ -390,7 +389,7 @@ smart contracts to communicate between channels so that ledger information can
 be accessed between them.
 
 You can read more about how ledgers work with channels in this
-[topic](./developapps/chaincodenamespace.html#channel).
+[topic](../developapps/chaincodenamespace.html#channels).
 
 
 ## More information

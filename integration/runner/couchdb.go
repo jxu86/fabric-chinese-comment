@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -22,7 +23,9 @@ import (
 	"github.com/tedsuo/ifrit"
 )
 
-const CouchDBDefaultImage = "hyperledger/fabric-couchdb:latest"
+const CouchDBDefaultImage = "couchdb:3.1"
+const CouchDBUsername = "admin"
+const CouchDBPassword = "adminpw"
 
 // CouchDB manages the execution of an instance of a dockerized CounchDB
 // for tests.
@@ -34,10 +37,12 @@ type CouchDB struct {
 	ContainerPort docker.Port
 	Name          string
 	StartTimeout  time.Duration
+	Binds         []string
 
 	ErrorStream  io.Writer
 	OutputStream io.Writer
 
+	creator          string
 	containerID      string
 	hostAddress      string
 	containerAddress string
@@ -85,12 +90,20 @@ func (c *CouchDB) Run(sigCh <-chan os.Signal, ready chan<- struct{}) error {
 				HostPort: strconv.Itoa(c.HostPort),
 			}},
 		},
+		Binds: c.Binds,
 	}
 
 	container, err := c.Client.CreateContainer(
 		docker.CreateContainerOptions{
-			Name:       c.Name,
-			Config:     &docker.Config{Image: c.Image},
+			Name: c.Name,
+			Config: &docker.Config{
+				Image: c.Image,
+				Env: []string{
+					fmt.Sprintf("_creator=%s", c.creator),
+					fmt.Sprintf("COUCHDB_USER=%s", CouchDBUsername),
+					fmt.Sprintf("COUCHDB_PASSWORD=%s", CouchDBPassword),
+				},
+			},
 			HostConfig: hostConfig,
 		},
 	)
@@ -167,8 +180,8 @@ func endpointReady(ctx context.Context, url string) bool {
 
 func (c *CouchDB) ready(ctx context.Context, addr string) <-chan struct{} {
 	readyCh := make(chan struct{})
-	url := fmt.Sprintf("http://%s/", addr)
 	go func() {
+		url := fmt.Sprintf("http://%s:%s@%s/", CouchDBUsername, CouchDBPassword, addr)
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -244,6 +257,7 @@ func (c *CouchDB) ContainerID() string {
 
 // Start starts the CouchDB container using an ifrit runner
 func (c *CouchDB) Start() error {
+	c.creator = string(debug.Stack())
 	p := ifrit.Invoke(c)
 
 	select {

@@ -29,17 +29,12 @@ const (
 	opened
 )
 
-// Conf configuration for `DB`
-type Conf struct {
-	DBPath string
-}
-
 // DB - a wrapper on an actual store
 type DB struct {
 	conf    *Conf
 	db      *leveldb.DB
 	dbState dbState
-	mux     sync.Mutex
+	mutex   sync.RWMutex
 
 	readOpts        *opt.ReadOptions
 	writeOptsNoSync *opt.WriteOptions
@@ -63,8 +58,8 @@ func CreateDB(conf *Conf) *DB {
 
 // Open opens the underlying db
 func (dbInst *DB) Open() {
-	dbInst.mux.Lock()
-	defer dbInst.mux.Unlock()
+	dbInst.mutex.Lock()
+	defer dbInst.mutex.Unlock()
 	if dbInst.dbState == opened {
 		return
 	}
@@ -82,10 +77,21 @@ func (dbInst *DB) Open() {
 	dbInst.dbState = opened
 }
 
+// IsEmpty returns whether or not a database is empty
+func (dbInst *DB) IsEmpty() (bool, error) {
+	dbInst.mutex.RLock()
+	defer dbInst.mutex.RUnlock()
+	itr := dbInst.db.NewIterator(&goleveldbutil.Range{}, dbInst.readOpts)
+	defer itr.Release()
+	hasItems := itr.Next()
+	return !hasItems,
+		errors.Wrapf(itr.Error(), "error while trying to see if the leveldb at path [%s] is empty", dbInst.conf.DBPath)
+}
+
 // Close closes the underlying db
 func (dbInst *DB) Close() {
-	dbInst.mux.Lock()
-	defer dbInst.mux.Unlock()
+	dbInst.mutex.Lock()
+	defer dbInst.mutex.Unlock()
 	if dbInst.dbState == closed {
 		return
 	}
@@ -97,6 +103,8 @@ func (dbInst *DB) Close() {
 
 // Get returns the value for the given key
 func (dbInst *DB) Get(key []byte) ([]byte, error) {
+	dbInst.mutex.RLock()
+	defer dbInst.mutex.RUnlock()
 	value, err := dbInst.db.Get(key, dbInst.readOpts)
 	if err == leveldb.ErrNotFound {
 		value = nil
@@ -111,6 +119,8 @@ func (dbInst *DB) Get(key []byte) ([]byte, error) {
 
 // Put saves the key/value
 func (dbInst *DB) Put(key []byte, value []byte, sync bool) error {
+	dbInst.mutex.RLock()
+	defer dbInst.mutex.RUnlock()
 	wo := dbInst.writeOptsNoSync
 	if sync {
 		wo = dbInst.writeOptsSync
@@ -125,6 +135,8 @@ func (dbInst *DB) Put(key []byte, value []byte, sync bool) error {
 
 // Delete deletes the given key
 func (dbInst *DB) Delete(key []byte, sync bool) error {
+	dbInst.mutex.RLock()
+	defer dbInst.mutex.RUnlock()
 	wo := dbInst.writeOptsNoSync
 	if sync {
 		wo = dbInst.writeOptsSync
@@ -141,11 +153,15 @@ func (dbInst *DB) Delete(key []byte, sync bool) error {
 // The resultset contains all the keys that are present in the db between the startKey (inclusive) and the endKey (exclusive).
 // A nil startKey represents the first available key and a nil endKey represent a logical key after the last available key
 func (dbInst *DB) GetIterator(startKey []byte, endKey []byte) iterator.Iterator {
+	dbInst.mutex.RLock()
+	defer dbInst.mutex.RUnlock()
 	return dbInst.db.NewIterator(&goleveldbutil.Range{Start: startKey, Limit: endKey}, dbInst.readOpts)
 }
 
 // WriteBatch writes a batch
 func (dbInst *DB) WriteBatch(batch *leveldb.Batch, sync bool) error {
+	dbInst.mutex.RLock()
+	defer dbInst.mutex.RUnlock()
 	wo := dbInst.writeOptsNoSync
 	if sync {
 		wo = dbInst.writeOptsSync

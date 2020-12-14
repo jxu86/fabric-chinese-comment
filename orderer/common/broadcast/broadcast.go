@@ -10,11 +10,11 @@ import (
 	"io"
 	"time"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	ab "github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
-	cb "github.com/hyperledger/fabric/protos/common"
-	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/pkg/errors"
 )
 
@@ -64,11 +64,9 @@ type Handler struct {
 
 // Handle reads requests from a Broadcast stream, processes them, and returns the responses to the stream
 func (bh *Handler) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
-	// 获取消息的源地址
 	addr := util.ExtractRemoteAddress(srv.Context())
 	logger.Debugf("Starting new broadcast loop for %s", addr)
 	for {
-		// 接收消息
 		msg, err := srv.Recv()
 		if err == io.EOF {
 			logger.Debugf("Received EOF from %s, hangup", addr)
@@ -78,9 +76,8 @@ func (bh *Handler) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
 			logger.Warningf("Error reading from %s: %s", addr, err)
 			return err
 		}
-		// 处理接收到的消息
+
 		resp := bh.ProcessMessage(msg, addr)
-		// 将响应信息广播出去
 		err = srv.Send(resp)
 		if resp.Status != cb.Status_SUCCESS {
 			return err
@@ -137,7 +134,6 @@ func (mt *MetricsTracker) BeginEnqueue() {
 
 // ProcessMessage validates and enqueues a single message
 func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.BroadcastResponse) {
-	// 这个结构体应该理解为记录器，记录消息的相关信息
 	tracker := &MetricsTracker{
 		ChannelID: "unknown",
 		TxType:    "unknown",
@@ -149,9 +145,8 @@ func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.Broad
 		// and not the return value
 		tracker.Record(resp)
 	}()
-	// 记录处理消息的开始时间
 	tracker.BeginValidate()
-	// 该方法获取接收到的消息的Header,并判断是否为配置信息
+
 	chdr, isConfig, processor, err := bh.SupportRegistrar.BroadcastChannelSupport(msg)
 	if chdr != nil {
 		tracker.ChannelID = chdr.ChannelId
@@ -161,7 +156,7 @@ func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.Broad
 		logger.Warningf("[channel: %s] Could not get message processor for serving %s: %s", tracker.ChannelID, addr, err)
 		return &ab.BroadcastResponse{Status: cb.Status_BAD_REQUEST, Info: err.Error()}
 	}
-	// 由于之前Peer节点发送的为创建通道的信息，所以消息类型为配置信息
+
 	if !isConfig {
 		logger.Debugf("[channel: %s] Broadcast is processing normal message from %s with txid '%s' of type %s", chdr.ChannelId, addr, chdr.TxId, cb.HeaderType_name[chdr.Type])
 

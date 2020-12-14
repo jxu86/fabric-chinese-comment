@@ -16,12 +16,13 @@ import (
 	"testing"
 	"time"
 
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
+	"github.com/hyperledger/fabric/gossip/protoext"
 	utilgossip "github.com/hyperledger/fabric/gossip/util"
-	proto "github.com/hyperledger/fabric/protos/gossip"
+	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 )
@@ -47,7 +48,7 @@ func (p *peerMock) GossipStream(stream proto.Gossip_GossipStreamServer) error {
 		if err != nil {
 			return err
 		}
-		gMsg, err := envelope.ToGossipMessage()
+		gMsg, err := protoext.EnvelopeToGossipMessage(envelope)
 		if err != nil {
 			panic(err)
 		}
@@ -89,7 +90,7 @@ func newPeerMockWithGRPC(port int, gRPCServer *comm.GRPCServer, certs *common.TL
 	return p
 }
 
-func (p *peerMock) connEstablishMsg(pkiID common.PKIidType, hash []byte, cert api.PeerIdentityType) *proto.SignedGossipMessage {
+func (p *peerMock) connEstablishMsg(pkiID common.PKIidType, hash []byte, cert api.PeerIdentityType) *protoext.SignedGossipMessage {
 	m := &proto.GossipMessage{
 		Tag:   proto.GossipMessage_EMPTY,
 		Nonce: 0,
@@ -101,7 +102,7 @@ func (p *peerMock) connEstablishMsg(pkiID common.PKIidType, hash []byte, cert ap
 			},
 		},
 	}
-	gMsg := &proto.SignedGossipMessage{
+	gMsg := &protoext.SignedGossipMessage{
 		GossipMessage: m,
 	}
 	gMsg.Sign((&configurableCryptoService{}).Sign)
@@ -113,16 +114,16 @@ func (p *peerMock) stop() {
 }
 
 type receivedMsg struct {
-	*proto.SignedGossipMessage
+	*protoext.SignedGossipMessage
 	stream proto.Gossip_GossipStreamServer
 }
 
-func (msg *receivedMsg) respond(message *proto.SignedGossipMessage) {
+func (msg *receivedMsg) respond(message *protoext.SignedGossipMessage) {
 	msg.stream.Send(message.Envelope)
 }
 
-func memResp(nonce uint64, endpoint string) *proto.SignedGossipMessage {
-	fakePeerAliveMsg := &proto.SignedGossipMessage{
+func memResp(nonce uint64, endpoint string) *protoext.SignedGossipMessage {
+	fakePeerAliveMsg := &protoext.SignedGossipMessage{
 		GossipMessage: &proto.GossipMessage{
 			Tag: proto.GossipMessage_EMPTY,
 			Content: &proto.GossipMessage_AliveMsg{
@@ -142,26 +143,22 @@ func memResp(nonce uint64, endpoint string) *proto.SignedGossipMessage {
 	}
 
 	m, _ := fakePeerAliveMsg.Sign((&configurableCryptoService{}).Sign)
-	sMsg, _ := (&proto.SignedGossipMessage{
-		GossipMessage: &proto.GossipMessage{
-			Tag:   proto.GossipMessage_EMPTY,
-			Nonce: nonce,
-			Content: &proto.GossipMessage_MemRes{
-				MemRes: &proto.MembershipResponse{
-					Alive: []*proto.Envelope{m},
-					Dead:  []*proto.Envelope{},
-				},
+	sMsg, _ := protoext.NoopSign(&proto.GossipMessage{
+		Tag:   proto.GossipMessage_EMPTY,
+		Nonce: nonce,
+		Content: &proto.GossipMessage_MemRes{
+			MemRes: &proto.MembershipResponse{
+				Alive: []*proto.Envelope{m},
+				Dead:  []*proto.Envelope{},
 			},
 		},
-	}).NoopSign()
+	})
 	return sMsg
 }
 
 type msgInspection func(t *testing.T, index int, m *receivedMsg)
 
 func TestAnchorPeer(t *testing.T) {
-	t.Parallel()
-	defer testWG.Done()
 	// Actors:
 	// OrgA: {
 	// 	p:   a real gossip instance
@@ -212,9 +209,9 @@ func TestAnchorPeer(t *testing.T) {
 		}
 		assert.True(t, index > 0)
 		req := m.GetMemReq()
-		am, err := req.SelfInformation.ToGossipMessage()
+		am, err := protoext.EnvelopeToGossipMessage(req.SelfInformation)
 		assert.NoError(t, err)
-		assert.NotEmpty(t, am.GetSecretEnvelope().InternalEndpoint())
+		assert.NotEmpty(t, protoext.InternalEndpoint(am.GetSecretEnvelope()))
 		m.respond(memResp(m.Nonce, fmt.Sprintf("127.0.0.1:%d", port3)))
 	}
 
@@ -224,7 +221,7 @@ func TestAnchorPeer(t *testing.T) {
 		}
 		assert.True(t, index > 0)
 		req := m.GetMemReq()
-		am, err := req.SelfInformation.ToGossipMessage()
+		am, err := protoext.EnvelopeToGossipMessage(req.SelfInformation)
 		assert.NoError(t, err)
 		assert.Nil(t, am.GetSecretEnvelope())
 		m.respond(memResp(m.Nonce, fmt.Sprintf("127.0.0.1:%d", port4)))
@@ -245,7 +242,7 @@ func TestAnchorPeer(t *testing.T) {
 			},
 		},
 	}
-	channel := common.ChainID("TEST")
+	channel := common.ChannelID("TEST")
 	endpoint := fmt.Sprintf("127.0.0.1:%d", port)
 	// Create the gossip instance (the peer that connects to anchor peers)
 	p := newGossipInstanceWithGRPCWithExternalEndpoint(0, port, grpc, cert, secDialOpt, cs, endpoint)
@@ -269,8 +266,6 @@ func TestAnchorPeer(t *testing.T) {
 }
 
 func TestBootstrapPeerMisConfiguration(t *testing.T) {
-	t.Parallel()
-	defer testWG.Done()
 	// Scenario:
 	// The peer 'p' is a peer in orgA
 	// Peers bs1 and bs2 are bootstrap peers.
@@ -284,9 +279,9 @@ func TestBootstrapPeerMisConfiguration(t *testing.T) {
 	orgA := "orgA"
 	orgB := "orgB"
 
-	port, grpc, cert, secDialOpt, _ := utilgossip.CreateGRPCLayer()
+	port, grpc, cert, _, _ := utilgossip.CreateGRPCLayer()
 	fmt.Printf("port %d\n", port)
-	port1, grpc1, cert1, secDialOpt, _ := utilgossip.CreateGRPCLayer()
+	port1, grpc1, cert1, _, _ := utilgossip.CreateGRPCLayer()
 	fmt.Printf("port1 %d\n", port1)
 	port2, grpc2, cert2, secDialOpt, _ := utilgossip.CreateGRPCLayer()
 	fmt.Printf("port2 %d\n", port2)

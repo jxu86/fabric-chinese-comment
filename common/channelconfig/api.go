@@ -9,12 +9,12 @@ package channelconfig
 import (
 	"time"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	ab "github.com/hyperledger/fabric-protos-go/orderer"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/msp"
-	cb "github.com/hyperledger/fabric/protos/common"
-	ab "github.com/hyperledger/fabric/protos/orderer"
-	pb "github.com/hyperledger/fabric/protos/peer"
 )
 
 // Org stores the common organizational config
@@ -24,6 +24,9 @@ type Org interface {
 
 	// MSPID returns the MSP ID associated with this org
 	MSPID() string
+
+	// MSP returns the MSP implementation for this org.
+	MSP() msp.MSP
 }
 
 // ApplicationOrg stores the per org application config
@@ -170,20 +173,27 @@ type ApplicationCapabilities interface {
 	V1_3Validation() bool
 
 	// StorePvtDataOfInvalidTx() returns true if the peer needs to store the pvtData of
-	// invalid transactions.
+	// invalid transactions (as introduced in v142).
 	StorePvtDataOfInvalidTx() bool
 
-	// MetadataLifecycle indicates whether the peer should use the deprecated and problematic
-	// v1.0/v1.1 lifecycle, or whether it should use the newer per channel peer local chaincode
-	// metadata package approach planned for release with Fabric v1.2
+	// V2_0Validation returns true if this channel supports transaction validation
+	// as introduced in v2.0. This includes:
+	//  - new chaincode lifecycle
+	//  - implicit per-org collections
+	V2_0Validation() bool
+
+	// LifecycleV20 indicates whether the peer should use the deprecated and problematic
+	// v1.x lifecycle, or whether it should use the newer per channel approve/commit definitions
+	// process introduced in v2.0.  Note, this should only be used on the endorsing side
+	// of peer processing, so that we may safely remove all checks against it in v2.1.
+	LifecycleV20() bool
+
+	// MetadataLifecycle always returns false
 	MetadataLifecycle() bool
 
 	// KeyLevelEndorsement returns true if this channel supports endorsement
 	// policies expressible at a ledger key granularity, as described in FAB-8812
 	KeyLevelEndorsement() bool
-
-	// FabToken returns true if this channel supports FabToken functions
-	FabToken() bool
 }
 
 // OrdererCapabilities defines the capabilities for the orderer portion of a channel
@@ -205,6 +215,11 @@ type OrdererCapabilities interface {
 
 	// ConsensusTypeMigration checks whether the orderer permits a consensus-type migration.
 	ConsensusTypeMigration() bool
+
+	// UseChannelCreationPolicyAsAdmins checks whether the orderer should use more sophisticated
+	// channel creation logic using channel creation policy as the Admins policy if
+	// the creation transaction appears to support it.
+	UseChannelCreationPolicyAsAdmins() bool
 }
 
 // PolicyMapper is an interface for
