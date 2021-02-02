@@ -16,8 +16,9 @@ import (
 	"github.com/pkg/errors"
 )
 
+// 创建账本工厂
 func createLedgerFactory(conf *config.TopLevel, metricsProvider metrics.Provider) (blockledger.Factory, string, error) {
-	ld := conf.FileLedger.Location
+	ld := conf.FileLedger.Location // 获取账本的路径
 	var err error
 	if ld == "" {
 		if ld, err = ioutil.TempDir("", conf.FileLedger.Prefix); err != nil {

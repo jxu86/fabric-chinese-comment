@@ -101,7 +101,7 @@ func InitConfig(cmdRoot string) error {
 		return err
 	}
 
-	err = viper.ReadInConfig() // Find and read the config file
+	err = viper.ReadInConfig() // Find and read the config file, 得去FABRIC_CFG_PATH下的core.yaml
 	if err != nil {            // Handle errors reading the config file
 		// The version of Viper we use claims the config type isn't supported when in fact the file hasn't been found
 		// Display a more helpful message to avoid confusing the user.
@@ -134,13 +134,14 @@ func InitCrypto(mspMgrConfigDir, localMSPID, localMSPType string) error {
 	// Init the BCCSP
 	SetBCCSPKeystorePath()
 	bccspConfig := factory.GetDefaultOpts()
+	// 解析core.yaml中BCCSP组件配置信息到bccspConfig
 	if config := viper.Get("peer.BCCSP"); config != nil {
 		err = mapstructure.WeakDecode(config, bccspConfig)
 		if err != nil {
 			return errors.WithMessage(err, "could not decode peer BCCSP configuration")
 		}
 	}
-
+	// 调用mspmgmt.LoadLocalMspWithType初始化MSP组件
 	err = mspmgmt.LoadLocalMspWithType(mspMgrConfigDir, bccspConfig, localMSPID, localMSPType)
 	if err != nil {
 		return errors.WithMessagef(err, "error when setting up MSP of type %s from directory %s", localMSPType, mspMgrConfigDir)
@@ -281,6 +282,7 @@ func configFromEnv(prefix string) (address, override string, clientConfig comm.C
 }
 
 func InitCmd(cmd *cobra.Command, args []string) {
+	// 读取默认指定配置路径（FABRIC_CFG_PATH等）或者候选路径上的core.yaml配置文件，转换成键值对保存到Viper组件中
 	err := InitConfig(CmdRoot)
 	if err != nil { // Handle errors reading the config file
 		mainLogger.Errorf("Fatal error when initializing %s config : %s", CmdRoot, err)
@@ -314,7 +316,7 @@ func InitCmd(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	// Init the MSP
+	// Init the MSP 初始化MSP组件
 	var mspMgrConfigDir = config.GetPath("peer.mspConfigPath")
 	var mspID = viper.GetString("peer.localMspId")
 	var mspType = viper.GetString("peer.localMspType")

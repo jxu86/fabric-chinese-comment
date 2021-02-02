@@ -76,36 +76,40 @@ func Main() {
 		fmt.Println(metadata.GetVersionInfo())
 		return
 	}
-
+	// load 配置文件
 	conf, err := localconfig.Load()
 	if err != nil {
 		logger.Error("failed to parse config: ", err)
 		os.Exit(1)
 	}
+	// 设置日志的级别
 	initializeLogging()
-
+	// 打印conf即orderer.yaml配置
 	prettyPrintStruct(conf)
 
 	cryptoProvider := factory.GetDefault()
-
+	// 初始化本地MSP组件
 	signer, signErr := loadLocalMSP(conf).GetDefaultSigningIdentity()
 	if signErr != nil {
 		logger.Panicf("Failed to get local MSP identity: %s", signErr)
 	}
-
+	// newOperationsSystem函数可以创建一个“操作系统”，该操作系统或许也可以叫做是一个“orderer节点运行健康监测器”，
+	// 在之后节点启动过程中会陆续通过metricsProvider创建一些Metrics，这些Metrics会随着系统运行实时更新，
+	// 并作为数据由该操作系统操作，同时这些数据可以通过http协议，在浏览器中进行查看。
 	opsSystem := newOperationsSystem(conf.Operations, conf.Metrics)
 	metricsProvider := opsSystem.Provider
 	logObserver := floggingmetrics.NewObserver(metricsProvider)
 	flogging.SetObserver(logObserver)
-
+	// 初始化gRPC服务器配置
 	serverConfig := initializeServerConfig(conf, metricsProvider)
+	// 初始化gPRC服务器实例
 	grpcServer := initializeGrpcServer(conf, serverConfig)
 	caMgr := &caManager{
 		appRootCAsByChain:     make(map[string][][]byte),
 		ordererRootCAsByChain: make(map[string][][]byte),
 		clientRootCAs:         serverConfig.SecOpts.ClientRootCAs,
 	}
-
+	// 创建账本工厂
 	lf, _, err := createLedgerFactory(conf, metricsProvider)
 	if err != nil {
 		logger.Panicf("Failed to create ledger factory: %v", err)
@@ -122,6 +126,7 @@ func Main() {
 		// If yes, generate the system channel with a genesis block.
 		if len(lf.ChannelIDs()) == 0 && bootstrapBlock.Header.Number == 0 {
 			logger.Info("Bootstrapping the system channel")
+			// 初始化系统通道
 			initializeBootstrapChannel(bootstrapBlock, lf)
 		} else if len(lf.ChannelIDs()) > 0 {
 			logger.Info("Not bootstrapping the system channel because of existing channels")
@@ -221,7 +226,7 @@ func Main() {
 			)
 		}
 	}
-
+	// 初始化多通道注册管理器
 	manager := initializeMultichannelRegistrar(
 		clusterBootBlock,
 		repInitiator,
@@ -243,6 +248,7 @@ func Main() {
 	defer opsSystem.Stop()
 
 	mutualTLS := serverConfig.SecOpts.UseTLS && serverConfig.SecOpts.RequireClientCert
+	// 创建Orderer排序服务器
 	server := NewServer(
 		manager,
 		metricsProvider,
@@ -506,6 +512,7 @@ func initializeClusterClientConfig(conf *localconfig.TopLevel) comm.ClientConfig
 	return cc
 }
 
+// 初始化gRPC服务器配置, 返回ServerConfig结构体
 func initializeServerConfig(conf *localconfig.TopLevel, metricsProvider metrics.Provider) comm.ServerConfig {
 	// secure server config
 	secureOpts := comm.SecureOptions{
@@ -652,6 +659,7 @@ func consensusType(genesisBlock *cb.Block, bccsp bccsp.BCCSP) string {
 	return ordConf.ConsensusType()
 }
 
+// 初始化grpc服务，返回GRPCServer结构体
 func initializeGrpcServer(conf *localconfig.TopLevel, serverConfig comm.ServerConfig) *comm.GRPCServer {
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", conf.General.ListenAddress, conf.General.ListenPort))
 	if err != nil {
@@ -667,6 +675,7 @@ func initializeGrpcServer(conf *localconfig.TopLevel, serverConfig comm.ServerCo
 	return grpcServer
 }
 
+// 初始化本地MSP组件
 func loadLocalMSP(conf *localconfig.TopLevel) msp.MSP {
 	// MUST call GetLocalMspConfig first, so that default BCCSP is properly
 	// initialized prior to LoadByType.

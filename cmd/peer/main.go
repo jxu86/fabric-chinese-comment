@@ -43,11 +43,11 @@ func main() {
 
 	cryptoProvider := factory.GetDefault()
 
-	mainCmd.AddCommand(version.Cmd())
-	mainCmd.AddCommand(node.Cmd())
-	mainCmd.AddCommand(chaincode.Cmd(nil, cryptoProvider))
-	mainCmd.AddCommand(channel.Cmd(nil))
-	mainCmd.AddCommand(lifecycle.Cmd(cryptoProvider))
+	mainCmd.AddCommand(version.Cmd())                      // 创建应用通道、获取区块、加入通道等
+	mainCmd.AddCommand(node.Cmd())                         // 管理服务进程和查询服务状态
+	mainCmd.AddCommand(chaincode.Cmd(nil, cryptoProvider)) // 安装链码、实例化链码、调用链码、打包链码，查询链码等
+	mainCmd.AddCommand(channel.Cmd(nil))                   // 创建应用通道、获取区块、加入通道等
+	mainCmd.AddCommand(lifecycle.Cmd(cryptoProvider))      // 生命周期
 
 	// On failure Cobra prints the usage message and error string, so we only
 	// need to exit with a non-0 status

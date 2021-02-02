@@ -62,6 +62,7 @@ func (flf *fileLedgerFactory) Close() {
 }
 
 // New creates a new ledger factory
+// 创建一个新的账本工厂,返回fileLedgerFactory结构体
 func New(directory string, metricsProvider metrics.Provider) (blockledger.Factory, error) {
 	p, err := blkstorage.NewProvider(
 		blkstorage.NewConf(directory, -1),

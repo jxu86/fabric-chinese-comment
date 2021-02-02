@@ -312,6 +312,8 @@ var cache = &configCache{}
 
 // Load will load the configuration and cache it on the first call; subsequent
 // calls will return a clone of the configuration that was previously loaded.
+// 加载指定目录的orderer.yaml配置文件，获取配置信息
+// 返回TopLevel结构体
 func (c *configCache) load() (*TopLevel, error) {
 	var uconf TopLevel
 
@@ -330,6 +332,7 @@ func (c *configCache) load() (*TopLevel, error) {
 	defer c.mutex.Unlock()
 	serializedConf, ok := c.cache[config.ConfigFileUsed()]
 	if !ok {
+		// 将Viper类型解析成TopLevel类型
 		err := viperutil.EnhancedExactUnmarshal(config, &uconf)
 		if err != nil {
 			return nil, fmt.Errorf("Error unmarshaling config into struct: %s", err)
@@ -355,6 +358,7 @@ func (c *configCache) load() (*TopLevel, error) {
 	return &uconf, nil
 }
 
+// 填充TopLevel
 func (c *TopLevel) completeInitialization(configDir string) {
 	defer func() {
 		// Translate any paths for cluster TLS configuration if applicable
