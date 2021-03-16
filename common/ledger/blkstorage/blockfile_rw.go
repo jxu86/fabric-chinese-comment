@@ -18,6 +18,7 @@ type blockfileWriter struct {
 	file     *os.File
 }
 
+// 实例blockfileWriter结构体并打开区块文件
 func newBlockfileWriter(filePath string) (*blockfileWriter, error) {
 	writer := &blockfileWriter{filePath: filePath}
 	return writer, writer.open()

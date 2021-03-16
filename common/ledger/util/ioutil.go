@@ -20,6 +20,7 @@ import (
 var logger = flogging.MustGetLogger("kvledger.util")
 
 // CreateDirIfMissing creates a dir for dirPath if not already exists. If the dir is empty it returns true
+// 如果路径dirPath不存在，创建路径dirPath,如果路径没有任何文件返回true
 func CreateDirIfMissing(dirPath string) (bool, error) {
 	// if dirPath does not end with a path separator, it leaves out the last segment while creating directories
 	if !strings.HasSuffix(dirPath, "/") {

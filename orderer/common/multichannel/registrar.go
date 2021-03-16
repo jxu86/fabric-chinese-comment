@@ -321,7 +321,7 @@ func (r *Registrar) newLedgerResources(configTx *cb.Envelope) (*ledgerResources,
 	if err != nil {
 		return nil, errors.Wrapf(err, "error checking bundle for channel: %s", chdr.ChannelId)
 	}
-
+	// 返回FileLedger结构体实例
 	ledger, err := r.ledgerFactory.GetOrCreate(chdr.ChannelId)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error getting ledger for channel: %s", chdr.ChannelId)
@@ -361,9 +361,11 @@ func (r *Registrar) newChain(configtx *cb.Envelope) {
 	}
 
 	// If we have no blocks, we need to create the genesis block ourselves.
+	// 如果区块高度为0，创建一个创世区块
 	if ledgerResources.Height() == 0 {
 		ledgerResources.Append(blockledger.CreateNextBlock(ledgerResources, []*cb.Envelope{configtx}))
 	}
+	// 返回ChainSupport结构体实例
 	cs, err := newChainSupport(r, ledgerResources, r.consenters, r.signer, r.blockcutterMetrics, r.bccsp)
 	if err != nil {
 		logger.Panicf("Error creating chain support: %s", err)

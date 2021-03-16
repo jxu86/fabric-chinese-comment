@@ -146,7 +146,7 @@ func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.Broad
 		tracker.Record(resp)
 	}()
 	tracker.BeginValidate()
-
+	// 获取接收到的消息的Header、判断是否为配置信息、获取消息处理器
 	chdr, isConfig, processor, err := bh.SupportRegistrar.BroadcastChannelSupport(msg)
 	if chdr != nil {
 		tracker.ChannelID = chdr.ChannelId

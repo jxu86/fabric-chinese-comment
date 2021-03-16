@@ -18,8 +18,8 @@ const (
 
 // Conf encapsulates all the configurations for `BlockStore`
 type Conf struct {
-	blockStorageDir  string
-	maxBlockfileSize int
+	blockStorageDir  string // 区块文件路径
+	maxBlockfileSize int    // 最大区块文件大小
 }
 
 // NewConf constructs new `Conf`.
