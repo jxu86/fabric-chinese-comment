@@ -23,10 +23,23 @@ import (
 
 // ChainSupport holds the resources for a particular channel.
 type ChainSupport struct {
+	// 账本资源对象封装了通道配置资源对象（configResources类 型）与区块账本对象（FileLedger类型）
 	*ledgerResources
+	// 负责过滤处理应用通道上的消息，以筛选出符合 通道要求的消息，
+	// 默认初始化4个标准通道消息过滤器，即Empty-RejectRule拒绝空消息过滤器、 expirationRejectRule拒绝过期的签名者身份证书的过滤器、
+	// MaxBytesRule验证消息最大字节数（默认 98MB）的过滤器和sigFilter验证消息签名是否满足ChannelWriters（/Channel/Writers）通道写权限策略 要求的过滤器。
 	msgprocessor.Processor
+	// 负责构造新区块并向账本提交区块文件，同时创建新的应 用通道与更新通道配置。
+	// 该对象在初始化时设置最新的区块号lastBlock、通道配置序号lastConfigSeq、 最新的配置区块号lastConfigBlockNum、
+	// 多通道注册管理器Registrar对象（用于创建新的应用通道）以 及关联通道的链支持对象（用于更新通道配置）。
 	*BlockWriter
+	// 采用共识排序后端对交易排序，再添加到缓存交易消 息列表，
+	// 同时利用链支持对象上的消息切割组件、通道消息处理器、区块账本写组件等模块执行打包 出块、通道管理等操作。
 	consensus.Chain
+	// 消息切割组件
+	// 获取指定通道上 的Orderer配置，包含共识组件类型、交易出块周期时间、区块最大字节数、通道限制参数（如通道数 量）等。
+	// 接着，基于该配置创建消息切割组件（receiver类型），将本地的缓存交易消息列表按照交易 出块规则切割成批量交易集合（[]*cb.Envelope类型），
+	// 再交由区块账本写组件构造新区块，并提交到 账本区块文件
 	cutter blockcutter.Receiver
 	identity.SignerSerializer
 	BCCSP bccsp.BCCSP

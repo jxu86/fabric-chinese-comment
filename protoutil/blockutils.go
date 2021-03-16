@@ -18,6 +18,7 @@ import (
 )
 
 // NewBlock constructs a block with no data and no metadata.
+// 创建Block实例但不填数据
 func NewBlock(seqNum uint64, previousHash []byte) *cb.Block {
 	block := &cb.Block{}
 	block.Header = &cb.BlockHeader{}
