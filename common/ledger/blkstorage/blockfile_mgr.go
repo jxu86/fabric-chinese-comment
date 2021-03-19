@@ -289,6 +289,7 @@ func (mgr *blockfileMgr) addBlock(block *common.Block) error {
 	// verify the field `block.Header.PreviousHash` present in the block.
 	// This check is a simple bytes comparison and hence does not cause any observable performance penalty
 	// and may help in detecting a rare scenario if there is any bug in the ordering service.
+	// 判断当前block的previous hash是否等于上一个block的hash
 	if !bytes.Equal(block.Header.PreviousHash, bcInfo.CurrentBlockHash) {
 		return errors.Errorf(
 			"unexpected Previous block hash. Expected PreviousHash = [%x], PreviousHash referred in the latest block= [%x]",

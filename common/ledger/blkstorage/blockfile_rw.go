@@ -41,7 +41,7 @@ func (w *blockfileWriter) append(b []byte, sync bool) error {
 		return err
 	}
 	if sync {
-		return w.file.Sync()
+		return w.file.Sync() // 把当前内容持久化，一般就是马上写入到磁盘
 	}
 	return nil
 }
