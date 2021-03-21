@@ -152,6 +152,7 @@ func NewRegistrar(
 	return r
 }
 
+// 初始化system channelId链信息
 func (r *Registrar) Initialize(consenters map[string]consensus.Consenter) {
 	r.consenters = consenters
 	existingChannels := r.ledgerFactory.ChannelIDs()
@@ -256,12 +257,13 @@ func (r *Registrar) SystemChannel() *ChainSupport {
 // BroadcastChannelSupport returns the message channel header, whether the message is a config update
 // and the channel resources for a message or an error if the message is not a message which can
 // be processed directly (like CONFIG and ORDERER_TRANSACTION messages)
+// 返回channel header、isConfig、和链信息
 func (r *Registrar) BroadcastChannelSupport(msg *cb.Envelope) (*cb.ChannelHeader, bool, *ChainSupport, error) {
 	chdr, err := protoutil.ChannelHeader(msg)
 	if err != nil {
 		return nil, false, nil, fmt.Errorf("could not determine channel ID: %s", err)
 	}
-
+	// 获取对应channelId的链的信息
 	cs := r.GetChain(chdr.ChannelId)
 	// New channel creation
 	if cs == nil {
@@ -274,9 +276,9 @@ func (r *Registrar) BroadcastChannelSupport(msg *cb.Envelope) (*cb.ChannelHeader
 
 	isConfig := false
 	switch cs.ClassifyMsg(chdr) {
-	case msgprocessor.ConfigUpdateMsg:
+	case msgprocessor.ConfigUpdateMsg: // 处理信息by ProcessConfigUpdateMsg
 		isConfig = true
-	case msgprocessor.ConfigMsg:
+	case msgprocessor.ConfigMsg: // 处理信息by ProcessConfigMsg
 		return chdr, false, nil, errors.New("message is of type that cannot be processed directly")
 	default:
 	}
@@ -351,6 +353,7 @@ func (r *Registrar) CreateChain(chainName string) {
 	r.newChain(configTx(lf))
 }
 
+// 新建通道
 func (r *Registrar) newChain(configtx *cb.Envelope) {
 	r.lock.Lock()
 	defer r.lock.Unlock()

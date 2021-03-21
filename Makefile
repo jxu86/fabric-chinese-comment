@@ -45,7 +45,8 @@
 #   - verify - runs unit tests for only the changed package tree
 
 ALPINE_VER ?= 3.12
-BASE_VERSION = 2.2.0
+# 基础版本
+BASE_VERSION = 2.2.0	
 
 # 3rd party image version
 # These versions are also set in the runners in ./integration/runners/
@@ -56,18 +57,23 @@ ZOOKEEPER_VER ?= 5.3.1
 # Disable implicit rules
 .SUFFIXES:
 MAKEFLAGS += --no-builtin-rules
-
+# 构建路径
+# ?=指当没有指定BUILD_DIR时，才使用默认的`.build`作为构建目录
 BUILD_DIR ?= build
-
+# 额外版本：git commit号
 EXTRA_VERSION ?= $(shell git rev-parse --short HEAD)
+# 项目版本由基础版本和额外版本组成
 PROJECT_VERSION=$(BASE_VERSION)-snapshot-$(EXTRA_VERSION)
 
 # TWO_DIGIT_VERSION is derived, e.g. "2.0", especially useful as a local tag
 # for two digit references to most recent baseos and ccenv patch releases
 TWO_DIGIT_VERSION = $(shell echo $(BASE_VERSION) | cut -d '.' -f 1,2)
-
+# Go编译信息
+# 设置包名
 PKGNAME = github.com/hyperledger/fabric
+# 当前CPU架构
 ARCH=$(shell go env GOARCH)
+# OS和CPU架构
 MARCH=$(shell go env GOOS)-$(shell go env GOARCH)
 
 # defined in common/metadata/metadata.go
@@ -84,6 +90,7 @@ RELEASE_IMAGES = baseos ccenv orderer peer tools
 RELEASE_PLATFORMS = darwin-amd64 linux-amd64 windows-amd64
 TOOLS_EXES = configtxgen configtxlator cryptogen discover idemixgen peer
 
+# 要发的pkg和它们的路径
 pkgmap.configtxgen    := $(PKGNAME)/cmd/configtxgen
 pkgmap.configtxlator  := $(PKGNAME)/cmd/configtxlator
 pkgmap.cryptogen      := $(PKGNAME)/cmd/cryptogen
@@ -94,7 +101,10 @@ pkgmap.peer           := $(PKGNAME)/cmd/peer
 
 .DEFAULT_GOAL := all
 
+# 把docker-env.mk包含进来，主要是docker构建相关的选项
 include docker-env.mk
+# 包含gotools.mk，这个文件主要用来安装一些gotools，可以使用单个命令来装某个gotools，比如安装dep
+# `make gotool.dep`，具体见该文件
 include gotools.mk
 
 .PHONY: all
@@ -129,20 +139,21 @@ license:
 trailing-spaces:
 	@scripts/check_trailingspaces.sh
 
+# 实际调用gotools-install安装相关的gotools
 .PHONY: gotools
 gotools: gotools-install
 
 .PHONY: check-go-version
 check-go-version:
 	@scripts/check_go_version.sh $(GO_VER)
-
+# 进行集成测试
 .PHONY: integration-test
 integration-test: integration-test-prereqs
 	./scripts/run-integration-tests.sh
 
 .PHONY: integration-test-prereqs
 integration-test-prereqs: gotool.ginkgo baseos-docker ccenv-docker docker-thirdparty
-
+# 进行单元测试
 .PHONY: unit-test
 unit-test: unit-test-clean docker-thirdparty-couchdb
 	./scripts/run-unit-tests.sh
