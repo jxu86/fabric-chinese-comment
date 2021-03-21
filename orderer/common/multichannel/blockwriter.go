@@ -64,6 +64,7 @@ func newBlockWriter(lastBlock *cb.Block, r *Registrar, support blockWriterSuppor
 }
 
 // CreateNextBlock creates a new block with the next block number, and the given contents.
+// 创建一个新区块
 func (bw *BlockWriter) CreateNextBlock(messages []*cb.Envelope) *cb.Block {
 	previousBlockHash := protoutil.BlockHeaderHash(bw.lastBlock.Header)
 
@@ -78,7 +79,7 @@ func (bw *BlockWriter) CreateNextBlock(messages []*cb.Envelope) *cb.Block {
 			logger.Panicf("Could not marshal envelope: %s", err)
 		}
 	}
-
+    // 创建Block实例但不填元数据
 	block := protoutil.NewBlock(bw.lastBlock.Header.Number+1, previousBlockHash)
 	block.Header.DataHash = protoutil.BlockDataHash(data)
 	block.Data = data

@@ -18,6 +18,7 @@ type blockfileWriter struct {
 	file     *os.File
 }
 
+// 实例blockfileWriter结构体并打开区块文件
 func newBlockfileWriter(filePath string) (*blockfileWriter, error) {
 	writer := &blockfileWriter{filePath: filePath}
 	return writer, writer.open()
@@ -40,7 +41,7 @@ func (w *blockfileWriter) append(b []byte, sync bool) error {
 		return err
 	}
 	if sync {
-		return w.file.Sync()
+		return w.file.Sync() // 把当前内容持久化，一般就是马上写入到磁盘
 	}
 	return nil
 }

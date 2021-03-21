@@ -142,6 +142,7 @@ func sendCreateChainTransaction(cf *ChannelCmdFactory) error {
 	var chCrtEnv *cb.Envelope
 
 	if channelTxFile != "" {
+		// 根据指定的交易，即mychannel.tx ，把创建通道这个交易打包成Envelope
 		if chCrtEnv, err = createChannelFromConfigTx(channelTxFile); err != nil {
 			return err
 		}
@@ -150,7 +151,7 @@ func sendCreateChainTransaction(cf *ChannelCmdFactory) error {
 			return err
 		}
 	}
-
+	// 做一些检查，并对此Envelope签名
 	if chCrtEnv, err = sanityCheckAndSignConfigTx(chCrtEnv, cf.Signer); err != nil {
 		return err
 	}
@@ -162,17 +163,19 @@ func sendCreateChainTransaction(cf *ChannelCmdFactory) error {
 	}
 
 	defer broadcastClient.Close()
+	// 把Envelope发给orderer进行排序出块
 	err = broadcastClient.Send(chCrtEnv)
 
 	return err
 }
 
 func executeCreate(cf *ChannelCmdFactory) error {
+	// 把创建通道的交易发送给Orderer
 	err := sendCreateChainTransaction(cf)
 	if err != nil {
 		return err
 	}
-
+	// 获得该通道的创世块
 	block, err := getGenesisBlock(cf)
 	if err != nil {
 		return err
@@ -187,6 +190,7 @@ func executeCreate(cf *ChannelCmdFactory) error {
 	if outputBlock != common.UndefinedParamValue {
 		file = outputBlock
 	}
+	// 把该通道的创世块保存到本地
 	err = ioutil.WriteFile(file, b, 0644)
 	if err != nil {
 		return err

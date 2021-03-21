@@ -22,6 +22,8 @@ import (
 // constructBlockfilesInfo scans the last blockfile (if any) and construct the blockfilesInfo
 // if the last file contains no block or only a partially written block (potentially because of a crash while writing block to the file),
 // this scans the second last file (if any)
+// 读取最后一个区块文件，组成blockfilesInfo结构体信息
+// 如果最后一个文件没有block或者信息残缺，就会读取上一个区块文件
 func constructBlockfilesInfo(rootDir string) (*blockfilesInfo, error) {
 	logger.Debugf("constructing BlockfilesInfo")
 	var lastFileNum int

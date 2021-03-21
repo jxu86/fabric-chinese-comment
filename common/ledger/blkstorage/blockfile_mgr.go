@@ -34,15 +34,15 @@ var (
 )
 
 type blockfileMgr struct {
-	rootDir                   string
-	conf                      *Conf
-	db                        *leveldbhelper.DBHandle
+	rootDir                   string                  // 账本路径
+	conf                      *Conf                   // 区块文件路径，最大区块文件大小
+	db                        *leveldbhelper.DBHandle //通过leveldbProvider的gethandle方法传入chainID 来获得一个levelDB的处理句柄，该句柄绑定了通道名称与一个已经打开的数据库操作对象
 	index                     *blockIndex
-	blockfilesInfo            *blockfilesInfo
+	blockfilesInfo            *blockfilesInfo //区块文件信息
 	bootstrappingSnapshotInfo *BootstrappingSnapshotInfo
-	blkfilesInfoCond          *sync.Cond
+	blkfilesInfoCond          *sync.Cond //其中包含区块文件的实际路径与区块文件的可操作性句柄
 	currentFileWriter         *blockfileWriter
-	bcInfo                    atomic.Value
+	bcInfo                    atomic.Value //区块链简要信息 包含当前区块高度  当前区块hash 上一个区块hash
 }
 
 /*
@@ -88,13 +88,16 @@ At start up a new manager:
 */
 func newBlockfileMgr(id string, conf *Conf, indexConfig *IndexConfig, indexStore *leveldbhelper.DBHandle) (*blockfileMgr, error) {
 	logger.Debugf("newBlockfileMgr() initializing file-based block storage for ledger: %s ", id)
+	// 返回账本路径
 	rootDir := conf.getLedgerBlockDir(id)
+	// 创建路多级路径rootDir
 	_, err := util.CreateDirIfMissing(rootDir)
 	if err != nil {
 		panic(fmt.Sprintf("Error creating block storage root dir [%s]: %s", rootDir, err))
 	}
+	// 组装结构体blockfileMgr
 	mgr := &blockfileMgr{rootDir: rootDir, conf: conf, db: indexStore}
-
+	// 从database获取结构体blockfilesInfo信息
 	blockfilesInfo, err := mgr.loadBlkfilesInfo()
 	if err != nil {
 		panic(fmt.Sprintf("Could not get block file info for current block file from db: %s", err))
@@ -109,11 +112,12 @@ func newBlockfileMgr(id string, conf *Conf, indexConfig *IndexConfig, indexStore
 		logger.Debug(`Synching block information from block storage (if needed)`)
 		syncBlockfilesInfoFromFS(rootDir, blockfilesInfo)
 	}
+	// 同步blockfilesInfo信息到db
 	err = mgr.saveBlkfilesInfo(blockfilesInfo, true)
 	if err != nil {
 		panic(fmt.Sprintf("Could not save next block file info to db: %s", err))
 	}
-
+	// 实例blockfileWriter结构体并打开区块文件
 	currentFileWriter, err := newBlockfileWriter(deriveBlockfilePath(rootDir, blockfilesInfo.latestFileNumber))
 	if err != nil {
 		panic(fmt.Sprintf("Could not open writer to current file: %s", err))
@@ -159,6 +163,7 @@ func newBlockfileMgr(id string, conf *Conf, indexConfig *IndexConfig, indexStore
 			CurrentBlockHash:  lastBlockHash,
 			PreviousBlockHash: previousBlockHash}
 	}
+	// what?
 	mgr.bcInfo.Store(bcInfo)
 	return mgr, nil
 }
@@ -203,9 +208,11 @@ func bootstrapFromSnapshottedTxIDs(
 	return nil
 }
 
+// 从区块文件同步blkfilesInfo
 func syncBlockfilesInfoFromFS(rootDir string, blkfilesInfo *blockfilesInfo) {
 	logger.Debugf("Starting blockfilesInfo=%s", blkfilesInfo)
 	//Checks if the file suffix of where the last block was written exists
+	// 检查最后一个块写入位置的文件后缀是否存在
 	filePath := deriveBlockfilePath(rootDir, blkfilesInfo.latestFileNumber)
 	exists, size, err := util.FileExists(filePath)
 	if err != nil {
@@ -239,6 +246,7 @@ func syncBlockfilesInfoFromFS(rootDir string, blkfilesInfo *blockfilesInfo) {
 	logger.Debugf("blockfilesInfo after updates by scanning the last file segment:%s", blkfilesInfo)
 }
 
+// 按照给的序号获取区块链文件的完整路径
 func deriveBlockfilePath(rootDir string, suffixNum int) string {
 	return rootDir + "/" + blockfilePrefix + fmt.Sprintf("%06d", suffixNum)
 }
@@ -281,6 +289,7 @@ func (mgr *blockfileMgr) addBlock(block *common.Block) error {
 	// verify the field `block.Header.PreviousHash` present in the block.
 	// This check is a simple bytes comparison and hence does not cause any observable performance penalty
 	// and may help in detecting a rare scenario if there is any bug in the ordering service.
+	// 判断当前block的previous hash是否等于上一个block的hash
 	if !bytes.Equal(block.Header.PreviousHash, bcInfo.CurrentBlockHash) {
 		return errors.Errorf(
 			"unexpected Previous block hash. Expected PreviousHash = [%x], PreviousHash referred in the latest block= [%x]",
@@ -659,6 +668,7 @@ func (mgr *blockfileMgr) fetchRawBytes(lp *fileLocPointer) ([]byte, error) {
 }
 
 //Get the current blockfilesInfo information that is stored in the database
+// 从database获取结构体blockfilesInfo信息, blkMgrInfoKey = "blkMgrInfo"
 func (mgr *blockfileMgr) loadBlkfilesInfo() (*blockfilesInfo, error) {
 	var b []byte
 	var err error
@@ -728,10 +738,10 @@ func scanForLastCompleteBlock(rootDir string, fileNum int, startingOffset int64)
 
 // blockfilesInfo maintains the summary about the blockfiles
 type blockfilesInfo struct {
-	latestFileNumber   int
-	latestFileSize     int
-	noBlockFiles       bool
-	lastPersistedBlock uint64
+	latestFileNumber   int    // 最新block所在的文件num
+	latestFileSize     int    // 下一个block在文件的起始位置
+	noBlockFiles       bool   // 是否是空账本
+	lastPersistedBlock uint64 // 最新的blocknum
 }
 
 func (i *blockfilesInfo) marshal() ([]byte, error) {
