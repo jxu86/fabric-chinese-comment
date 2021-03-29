@@ -384,6 +384,7 @@ func NewConsortiumGroup(conf *genesisconfig.Consortium) (*cb.ConfigGroup, error)
 
 // NewChannelCreateConfigUpdate generates a ConfigUpdate which can be sent to the orderer to create a new channel.  Optionally, the channel group of the
 // ordering system channel may be passed in, and the resulting ConfigUpdate will extract the appropriate versions from this file.
+// 返回ConfigUpdate结构体
 func NewChannelCreateConfigUpdate(channelID string, conf *genesisconfig.Profile, templateConfig *cb.ConfigGroup) (*cb.ConfigUpdate, error) {
 	if conf.Application == nil {
 		return nil, errors.New("cannot define a new channel with no Application section")
@@ -397,7 +398,7 @@ func NewChannelCreateConfigUpdate(channelID string, conf *genesisconfig.Profile,
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not turn parse profile into channel group")
 	}
-
+	// 对比templateConfig和newChannelGroup，返回updt(ConfigUpdate)
 	updt, err := update.Compute(&cb.Config{ChannelGroup: templateConfig}, &cb.Config{ChannelGroup: newChannelGroup})
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not compute update")

@@ -81,6 +81,7 @@ func CreateSignedEnvelopeWithTLSBinding(
 	epoch uint64,
 	tlsCertHash []byte,
 ) (*common.Envelope, error) {
+	// 返回实例化ChannelHeader
 	payloadChannelHeader := MakeChannelHeader(txType, msgVersion, channelID, epoch)
 	payloadChannelHeader.TlsCertHash = tlsCertHash
 	var err error

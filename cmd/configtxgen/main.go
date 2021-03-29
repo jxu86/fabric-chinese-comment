@@ -58,6 +58,7 @@ func doOutputChannelCreateTx(conf, baseProfile *genesisconfig.Profile, channelID
 	var configtx *cb.Envelope
 	var err error
 	if baseProfile == nil {
+		// 返回Envelope结构体数据
 		configtx, err = encoder.MakeChannelCreationTransaction(channelID, nil, conf)
 	} else {
 		configtx, err = encoder.MakeChannelCreationTransactionWithSystemChannelContext(channelID, nil, conf, baseProfile)
@@ -67,6 +68,7 @@ func doOutputChannelCreateTx(conf, baseProfile *genesisconfig.Profile, channelID
 	}
 
 	logger.Info("Writing new channel tx")
+	// 把configtx写入文件outputChannelCreateTx
 	err = writeFile(outputChannelCreateTx, protoutil.MarshalOrPanic(configtx), 0640)
 	if err != nil {
 		return fmt.Errorf("error writing channel create tx: %s", err)

@@ -15,6 +15,7 @@ import (
 	"github.com/hyperledger/fabric/protoutil"
 )
 
+// 对比original和updated，不一样的放writeSet，一样的放sameSet
 func computePoliciesMapUpdate(original, updated map[string]*cb.ConfigPolicy) (readSet, writeSet, sameSet map[string]*cb.ConfigPolicy, updatedMembers bool) {
 	readSet = make(map[string]*cb.ConfigPolicy)
 	writeSet = make(map[string]*cb.ConfigPolicy)
@@ -150,6 +151,8 @@ func computeGroupsMapUpdate(original, updated map[string]*cb.ConfigGroup) (readS
 	return
 }
 
+// 对比original和updated，一样的放readSet，不一样的放writeSet，writeSet的Version比readSet多1
+// 如果original和updated不一样updatedGroup=false，一样为true
 func computeGroupUpdate(original, updated *cb.ConfigGroup) (readSet, writeSet *cb.ConfigGroup, updatedGroup bool) {
 	readSetPolicies, writeSetPolicies, sameSetPolicies, policiesMembersUpdated := computePoliciesMapUpdate(original.Policies, updated.Policies)
 	readSetValues, writeSetValues, sameSetValues, valuesMembersUpdated := computeValuesMapUpdate(original.Values, updated.Values)
@@ -159,6 +162,7 @@ func computeGroupUpdate(original, updated *cb.ConfigGroup) (readSet, writeSet *c
 	if !(policiesMembersUpdated || valuesMembersUpdated || groupsMembersUpdated || original.ModPolicy != updated.ModPolicy) {
 
 		// If there were no modified entries in any of the policies/values/groups maps
+		// original和updated完全一样
 		if len(readSetPolicies) == 0 &&
 			len(writeSetPolicies) == 0 &&
 			len(readSetValues) == 0 &&
@@ -214,6 +218,7 @@ func computeGroupUpdate(original, updated *cb.ConfigGroup) (readSet, writeSet *c
 		}, true
 }
 
+// 对比original、updated差异，返回结构体ConfigUpdate
 func Compute(original, updated *cb.Config) (*cb.ConfigUpdate, error) {
 	if original.ChannelGroup == nil {
 		return nil, fmt.Errorf("no channel group included for original config")
@@ -222,7 +227,7 @@ func Compute(original, updated *cb.Config) (*cb.ConfigUpdate, error) {
 	if updated.ChannelGroup == nil {
 		return nil, fmt.Errorf("no channel group included for updated config")
 	}
-
+	// 对比original和updated，readSet为一样的内容，writeSet为不一样的内容，groupUpdated是否有差异
 	readSet, writeSet, groupUpdated := computeGroupUpdate(original.ChannelGroup, updated.ChannelGroup)
 	if !groupUpdated {
 		return nil, fmt.Errorf("no differences detected between original and updated config")
