@@ -52,6 +52,7 @@ func doOutputBlock(config *genesisconfig.Profile, channelID string, outputBlock 
 	return nil
 }
 
+// 创建应用通道交易配置文件
 func doOutputChannelCreateTx(conf, baseProfile *genesisconfig.Profile, channelID string, outputChannelCreateTx string) error {
 	logger.Info("Generating new channel configtx")
 
@@ -67,6 +68,7 @@ func doOutputChannelCreateTx(conf, baseProfile *genesisconfig.Profile, channelID
 		return err
 	}
 
+	//将指定的内容序列化为一个protobuf消息之后将其写入到由outputChannelCreateTx变量代表（用户指定的文件）的文件中。即生成最终的目标文件。
 	logger.Info("Writing new channel tx")
 	// 把configtx写入文件outputChannelCreateTx
 	err = writeFile(outputChannelCreateTx, protoutil.MarshalOrPanic(configtx), 0640)

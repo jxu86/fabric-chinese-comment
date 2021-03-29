@@ -130,7 +130,7 @@ func AddPolicies(cg *cb.ConfigGroup, policyMap map[string]*genesisconfig.Policy,
 // configuration.  All mod_policy values are set to "Admins" for this group, with the exception of the OrdererAddresses
 // value which is set to "/Channel/Orderer/Admins".
 func NewChannelGroup(conf *genesisconfig.Profile) (*cb.ConfigGroup, error) {
-	channelGroup := protoutil.NewConfigGroup()
+	channelGroup := protoutil.NewConfigGroup() // 新建ConfigGroup实例
 	if err := AddPolicies(channelGroup, conf.Policies, channelconfig.AdminsPolicyKey); err != nil {
 		return nil, errors.Wrapf(err, "error adding policies to channel group")
 	}
@@ -384,7 +384,7 @@ func NewConsortiumGroup(conf *genesisconfig.Consortium) (*cb.ConfigGroup, error)
 
 // NewChannelCreateConfigUpdate generates a ConfigUpdate which can be sent to the orderer to create a new channel.  Optionally, the channel group of the
 // ordering system channel may be passed in, and the resulting ConfigUpdate will extract the appropriate versions from this file.
-// 返回ConfigUpdate结构体
+// 返回ConfigUpdate结构体，可以将它发送给Orderer以创建一个新通道。可选地，这个通道组可以传入Orderer系统通道，生成的ConfigUpdate将从该文件中提取适当的版本。
 func NewChannelCreateConfigUpdate(channelID string, conf *genesisconfig.Profile, templateConfig *cb.ConfigGroup) (*cb.ConfigUpdate, error) {
 	if conf.Application == nil {
 		return nil, errors.New("cannot define a new channel with no Application section")
@@ -405,6 +405,7 @@ func NewChannelCreateConfigUpdate(channelID string, conf *genesisconfig.Profile,
 	}
 
 	// Add the consortium name to create the channel for into the write set as required.
+	// 根据需要添加联盟名称，以便将通道创建到写入集中
 	updt.ChannelId = channelID
 	updt.ReadSet.Values[channelconfig.ConsortiumKey] = &cb.ConfigValue{Version: 0}
 	updt.WriteSet.Values[channelconfig.ConsortiumKey] = &cb.ConfigValue{
