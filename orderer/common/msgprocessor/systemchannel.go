@@ -94,13 +94,14 @@ func (s *SystemChannel) ProcessNormalMsg(msg *cb.Envelope) (configSeq uint64, er
 // or, for channel creation.  In the channel creation case, the CONFIG_UPDATE is wrapped into a resulting
 // ORDERER_TRANSACTION, and in the standard CONFIG_UPDATE case, a resulting CONFIG message
 func (s *SystemChannel) ProcessConfigUpdateMsg(envConfigUpdate *cb.Envelope) (config *cb.Envelope, configSeq uint64, err error) {
+	// 获取需要配置的channel id
 	channelID, err := protoutil.ChannelID(envConfigUpdate)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	logger.Debugf("Processing config update tx with system channel message processor for channel ID %s", channelID)
-
+	// 判断获取到的通道ID是否为已经存在的用户通道ID，如果是的话转到StandardChannel中的ProcessConfigUpdateMsg()方法进行处理
 	if channelID == s.support.ChannelID() {
 		return s.StandardChannel.ProcessConfigUpdateMsg(envConfigUpdate)
 	}
@@ -110,22 +111,22 @@ func (s *SystemChannel) ProcessConfigUpdateMsg(envConfigUpdate *cb.Envelope) (co
 	logger.Debugf("Processing channel create tx for channel %s on system channel %s", channelID, s.support.ChannelID())
 
 	// If the channel ID does not match the system channel, then this must be a channel creation transaction
-
+	// 返回Bundle结构体
 	bundle, err := s.templator.NewChannelConfig(envConfigUpdate)
 	if err != nil {
 		return nil, 0, err
 	}
-
+	// 创建一个配置验证器对该方法的传入参数进行验证操作,返回实例化结构体ConfigEnvelope
 	newChannelConfigEnv, err := bundle.ConfigtxValidator().ProposeConfigUpdate(envConfigUpdate)
 	if err != nil {
 		return nil, 0, errors.WithMessagef(err, "error validating channel creation transaction for new channel '%s', could not successfully apply update to template configuration", channelID)
 	}
-
+	// 创建一个签名的Envelope,此次为Header类型为HeaderType_CONFIG进行签名
 	newChannelEnvConfig, err := protoutil.CreateSignedEnvelope(cb.HeaderType_CONFIG, channelID, s.support.Signer(), newChannelConfigEnv, msgVersion, epoch)
 	if err != nil {
 		return nil, 0, err
 	}
-
+	// 创建一个签名的Transaction,此次为Header类型为HeaderType_ORDERER_TRANSACTION进行签名
 	wrappedOrdererTransaction, err := protoutil.CreateSignedEnvelope(cb.HeaderType_ORDERER_TRANSACTION, s.support.ChannelID(), s.support.Signer(), newChannelEnvConfig, msgVersion, epoch)
 	if err != nil {
 		return nil, 0, err
@@ -136,11 +137,12 @@ func (s *SystemChannel) ProcessConfigUpdateMsg(envConfigUpdate *cb.Envelope) (co
 	// check, which although not strictly necessary, is a good sanity check, in case the orderer
 	// has not been configured with the right cert material.  The additional overhead of the signature
 	// check is negligible, as this is the channel creation path and not the normal path.
+	// 过滤器进行过滤，主要检查是否创建的Transaction过大，以及签名检查，确保Order节点使用正确的证书进行签名
 	err = s.StandardChannel.filters.Apply(wrappedOrdererTransaction)
 	if err != nil {
 		return nil, 0, err
 	}
-
+	// 将Transaction返回
 	return wrappedOrdererTransaction, s.support.Sequence(), nil
 }
 
@@ -226,12 +228,14 @@ func NewDefaultTemplator(support DefaultTemplatorSupport, bccsp bccsp.BCCSP) *De
 }
 
 // NewChannelConfig creates a new template channel configuration based on the current config in the ordering system channel.
+// 创建一个新的通道配置模板
 func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (channelconfig.Resources, error) {
+	// 反序列化Payload数据
 	configUpdatePayload, err := protoutil.UnmarshalPayload(envConfigUpdate.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("Failing initial channel config creation because of payload unmarshaling error: %s", err)
 	}
-
+	// 反序列化配置更新信息Envelope
 	configUpdateEnv, err := configtx.UnmarshalConfigUpdateEnvelope(configUpdatePayload.Data)
 	if err != nil {
 		return nil, fmt.Errorf("Failing initial channel config creation because of config update envelope unmarshaling error: %s", err)
@@ -240,12 +244,12 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (chan
 	if configUpdatePayload.Header == nil {
 		return nil, fmt.Errorf("Failed initial channel config creation because config update header was missing")
 	}
-
+	// 获取通道头信息
 	channelHeader, err := protoutil.UnmarshalChannelHeader(configUpdatePayload.Header.ChannelHeader)
 	if err != nil {
 		return nil, fmt.Errorf("Failed initial channel config creation because channel header was malformed: %s", err)
 	}
-
+	// 反序列化配置更新信息
 	configUpdate, err := configtx.UnmarshalConfigUpdate(configUpdateEnv.ConfigUpdate)
 	if err != nil {
 		return nil, fmt.Errorf("Failing initial channel config creation because of config update unmarshaling error: %s", err)
@@ -266,7 +270,7 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (chan
 	if uv := configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Version; uv != 1 {
 		return nil, fmt.Errorf("Config update for channel creation does not set application group version to 1, was %d", uv)
 	}
-
+	// 根据之前定义的各项策略对通道进行配置，具体的策略可以看configtx.yaml文件
 	consortiumConfigValue, ok := configUpdate.WriteSet.Values[channelconfig.ConsortiumKey]
 	if !ok {
 		return nil, fmt.Errorf("Consortium config value missing")
@@ -318,6 +322,7 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (chan
 	applicationGroup.ModPolicy = policyKey
 
 	// Get the current system channel config
+	// 获取当前系统通道配置信息
 	systemChannelGroup := dt.support.ConfigtxValidator().ConfigProto().ChannelGroup
 
 	// If the consortium group has no members, allow the source request to have no members.  However,
@@ -342,6 +347,7 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (chan
 	channelGroup := protoutil.NewConfigGroup()
 
 	// Copy the system channel Channel level config to the new config
+	// 将系统通道配置信息复制
 	for key, value := range systemChannelGroup.Values {
 		channelGroup.Values[key] = proto.Clone(value).(*cb.ConfigValue)
 		if key == channelconfig.ConsortiumKey {
@@ -355,6 +361,7 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (chan
 	}
 
 	// Set the new config orderer group to the system channel orderer group and the application group to the new application group
+	// 新的配置信息中Order组配置使用系统通道的配置，同时将定义的application组配置赋值到新的配置信息
 	channelGroup.Groups[channelconfig.OrdererGroupKey] = proto.Clone(systemChannelGroup.Groups[channelconfig.OrdererGroupKey]).(*cb.ConfigGroup)
 	channelGroup.Groups[channelconfig.ApplicationGroupKey] = applicationGroup
 	channelGroup.Values[channelconfig.ConsortiumKey] = &cb.ConfigValue{
@@ -368,7 +375,7 @@ func (dt *DefaultTemplator) NewChannelConfig(envConfigUpdate *cb.Envelope) (chan
 		channelGroup.ModPolicy = systemChannelGroup.ModPolicy
 		zeroVersions(channelGroup)
 	}
-
+	// 将创建的新的配置打包为Bundle
 	bundle, err := channelconfig.NewBundle(channelHeader.ChannelId, &cb.Config{
 		ChannelGroup: channelGroup,
 	}, dt.bccsp)

@@ -67,6 +67,7 @@ func (bh *Handler) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
 	addr := util.ExtractRemoteAddress(srv.Context())
 	logger.Debugf("Starting new broadcast loop for %s", addr)
 	for {
+		// 接收grpc消息
 		msg, err := srv.Recv()
 		if err == io.EOF {
 			logger.Debugf("Received EOF from %s, hangup", addr)
@@ -76,8 +77,9 @@ func (bh *Handler) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
 			logger.Warningf("Error reading from %s: %s", addr, err)
 			return err
 		}
-
+		// 处理消息
 		resp := bh.ProcessMessage(msg, addr)
+		// 返回处理结果
 		err = srv.Send(resp)
 		if resp.Status != cb.Status_SUCCESS {
 			return err
@@ -134,6 +136,7 @@ func (mt *MetricsTracker) BeginEnqueue() {
 
 // ProcessMessage validates and enqueues a single message
 func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.BroadcastResponse) {
+	// 这个结构体应该理解为记录器，记录消息的相关信息
 	tracker := &MetricsTracker{
 		ChannelID: "unknown",
 		TxType:    "unknown",
@@ -145,6 +148,7 @@ func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.Broad
 		// and not the return value
 		tracker.Record(resp)
 	}()
+	// 记录处理消息的开始时间
 	tracker.BeginValidate()
 	// chdr: channelHeader,isConfig:是否为配置交易消息
 	// 获取接收到的消息的Header、判断是否为配置信息、获取消息处理器
@@ -181,20 +185,22 @@ func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.Broad
 		}
 	} else { // isConfig
 		logger.Debugf("[channel: %s] Broadcast is processing config update message from %s", chdr.ChannelId, addr)
-
+		// 对于配置消息，使用处理器处理配置变更消息
 		config, configSeq, err := processor.ProcessConfigUpdateMsg(msg)
 		if err != nil {
 			logger.Warningf("[channel: %s] Rejecting broadcast of config message from %s because of error: %s", chdr.ChannelId, addr, err)
 			return &ab.BroadcastResponse{Status: ClassifyError(err), Info: err.Error()}
 		}
+		// 记录消息处理完毕时间
 		tracker.EndValidate()
-
+		// 开始进行入队操作
 		tracker.BeginEnqueue()
+		// waitReady()是一个阻塞方法，等待入队完成或出现异常
 		if err = processor.WaitReady(); err != nil {
 			logger.Warningf("[channel: %s] Rejecting broadcast of message from %s with SERVICE_UNAVAILABLE: rejected by Consenter: %s", chdr.ChannelId, addr, err)
 			return &ab.BroadcastResponse{Status: cb.Status_SERVICE_UNAVAILABLE, Info: err.Error()}
 		}
-
+		// 把配置变更的交易进行全网共识,具体看看是哪种共识(raft、solo、kafka)
 		err = processor.Configure(config, configSeq)
 		if err != nil {
 			logger.Warningf("[channel: %s] Rejecting broadcast of config message from %s with SERVICE_UNAVAILABLE: rejected by Configure: %s", chdr.ChannelId, addr, err)
@@ -203,7 +209,7 @@ func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.Broad
 	}
 
 	logger.Debugf("[channel: %s] Broadcast has successfully enqueued message of type %s from %s", chdr.ChannelId, cb.HeaderType_name[chdr.Type], addr)
-
+	// 返回操作成功的响应
 	return &ab.BroadcastResponse{Status: cb.Status_SUCCESS}
 }
 

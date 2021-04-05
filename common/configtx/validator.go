@@ -100,6 +100,7 @@ func ValidateChannelID(channelID string) error {
 }
 
 // NewValidatorImpl constructs a new implementation of the Validator interface.
+// 实例化Validator接口
 func NewValidatorImpl(channelID string, config *cb.Config, namespace string, pm policies.Manager) (*ValidatorImpl, error) {
 	if config == nil {
 		return nil, errors.Errorf("nil config parameter")
@@ -108,7 +109,7 @@ func NewValidatorImpl(channelID string, config *cb.Config, namespace string, pm 
 	if config.ChannelGroup == nil {
 		return nil, errors.Errorf("nil channel group")
 	}
-
+	// 验证channelID的合法性
 	if err := ValidateChannelID(channelID); err != nil {
 		return nil, errors.Errorf("bad channel ID: %s", err)
 	}
@@ -130,6 +131,7 @@ func NewValidatorImpl(channelID string, config *cb.Config, namespace string, pm 
 
 // ProposeConfigUpdate takes in an Envelope of type CONFIG_UPDATE and produces a
 // ConfigEnvelope to be used as the Envelope Payload Data of a CONFIG message
+// 返回实例ConfigEnvelope结构体
 func (vi *ValidatorImpl) ProposeConfigUpdate(configtx *cb.Envelope) (*cb.ConfigEnvelope, error) {
 	return vi.proposeConfigUpdate(configtx)
 }

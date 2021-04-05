@@ -106,10 +106,12 @@ func (ch *chain) Errored() <-chan struct{} {
 }
 
 func (ch *chain) main() {
+	// 创建打包超时定时器
 	var timer <-chan time.Time
 	var err error
-
+	// 循环接收消息
 	for {
+		// 获取当前的配置序号
 		seq := ch.support.Sequence()
 		err = nil
 		select {
@@ -146,6 +148,7 @@ func (ch *chain) main() {
 
 			} else {
 				// ConfigMsg
+				// 消息中的配置序号小于通道最新配置序号，那么该消息就有可能会存在失效的问题
 				if msg.configSeq < seq {
 					msg.configMsg, _, err = ch.support.ProcessConfigMsg(msg.configMsg)
 					if err != nil {
@@ -158,23 +161,28 @@ func (ch *chain) main() {
 					block := ch.support.CreateNextBlock(batch)
 					ch.support.WriteBlock(block, nil)
 				}
-
+				// 创建一个新的区块
 				block := ch.support.CreateNextBlock([]*cb.Envelope{msg.configMsg})
+				// 写区块
 				ch.support.WriteConfigBlock(block, nil)
 				timer = nil
 			}
+		// 打包BatchTimeout超时定时器触发
 		case <-timer:
 			//clear the timer
 			timer = nil
-
+			// 直接对缓存的message进行Cut打包
 			batch := ch.support.BlockCutter().Cut()
+			// 如果batch为空，说明无消息可打包，继续等待消息
 			if len(batch) == 0 {
 				logger.Warningf("Batch timer expired with no pending requests, this might indicate a bug")
 				continue
 			}
+			// 创建区块，写入账本
 			logger.Debugf("Batch timer expired, creating block")
 			block := ch.support.CreateNextBlock(batch)
 			ch.support.WriteBlock(block, nil)
+		// 接收到exit chan时退出主逻辑
 		case <-ch.exitChan:
 			logger.Debugf("Exiting")
 			return
