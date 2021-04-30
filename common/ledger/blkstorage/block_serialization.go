@@ -25,6 +25,7 @@ type txindexInfo struct {
 	loc  *locPointer
 }
 
+// 把Block结构体数据变换成区块链信息数据结构serializedBlockInfo数据
 func serializeBlock(block *common.Block) ([]byte, *serializedBlockInfo, error) {
 	buf := proto.NewBuffer(nil)
 	var err error

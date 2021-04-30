@@ -15,7 +15,7 @@ import (
 	"github.com/hyperledger/fabric/protoutil"
 )
 
-// 对比original和updated，不一样的放writeSet，一样的放sameSet
+// 对比original和updated，不一样的放writeSet，一样的放sameSet，readSet为空(不知道是不是为了拓展)，updatedMembers
 func computePoliciesMapUpdate(original, updated map[string]*cb.ConfigPolicy) (readSet, writeSet, sameSet map[string]*cb.ConfigPolicy, updatedMembers bool) {
 	readSet = make(map[string]*cb.ConfigPolicy)
 	writeSet = make(map[string]*cb.ConfigPolicy)
@@ -24,6 +24,7 @@ func computePoliciesMapUpdate(original, updated map[string]*cb.ConfigPolicy) (re
 	// config which was the same to add to the read/write sets
 	sameSet = make(map[string]*cb.ConfigPolicy)
 
+	// 遍历original
 	for policyName, originalPolicy := range original {
 		updatedPolicy, ok := updated[policyName]
 		if !ok {
@@ -44,7 +45,7 @@ func computePoliciesMapUpdate(original, updated map[string]*cb.ConfigPolicy) (re
 			Policy:    updatedPolicy.Policy,
 		}
 	}
-
+	// 遍历original
 	for policyName, updatedPolicy := range updated {
 		if _, ok := original[policyName]; ok {
 			// If the updatedPolicy is in the original set of policies, it was already handled
