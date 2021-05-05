@@ -536,7 +536,7 @@ func MakeChannelCreationTransactionFromTemplate(
 		ConfigUpdate: protoutil.MarshalOrPanic(newChannelConfigUpdate),
 	}
 
-	if signer != nil {
+	if signer != nil {// 创建应用通道配置时传递的signer值为nil
 		sigHeader, err := protoutil.NewSignatureHeader(signer)
 		if err != nil {
 			return nil, errors.Wrap(err, "creating signature header failed")

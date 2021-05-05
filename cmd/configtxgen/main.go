@@ -215,17 +215,27 @@ func dirExists(path string) (bool, error) {
 
 func main() {
 	var outputBlock, outputChannelCreateTx, channelCreateTxBaseProfile, profile, configPath, channelID, inspectBlock, inspectChannelCreateTx, outputAnchorPeersUpdate, asOrg, printOrg string
-
+	//-outputBlock，初始区块写入指定文件
 	flag.StringVar(&outputBlock, "outputBlock", "", "The path to write the genesis block to (if set)")
+	//-channelID，指定通道名称
 	flag.StringVar(&channelID, "channelID", "", "The channel ID to use in the configtx")
+	//-outputCreateChannelTx，将通道创建交易写入指定文件
 	flag.StringVar(&outputChannelCreateTx, "outputCreateChannelTx", "", "The path to write a channel creation configtx to (if set)")
+	//-channelCreateTxBaseProfile 指定一个概要文件作为orderer系统通道当前状态，以允许在通道创建tx生成期间修改非应用程序参数。仅在与“outputCreateChannelTx”组合时有效。
 	flag.StringVar(&channelCreateTxBaseProfile, "channelCreateTxBaseProfile", "", "Specifies a profile to consider as the orderer system channel current state to allow modification of non-application parameters during channel create tx generation. Only valid in conjunction with 'outputCreateChannelTx'.")
+	//-profile，指定profile
 	flag.StringVar(&profile, "profile", "", "The profile from configtx.yaml to use for generation.")
+	//-configPath，配置文件路径，不传入默认读环境变量FABRIC_CFG_PATH
 	flag.StringVar(&configPath, "configPath", "", "The path containing the configuration to use (if set)")
+	//-inspectBlock，打印指定区块的配置信息
 	flag.StringVar(&inspectBlock, "inspectBlock", "", "Prints the configuration contained in the block at the specified path")
+	//-inspectChannelCreateTx 按指定路径打印交易中包含的配置，用来检查通道的配置交易信息
 	flag.StringVar(&inspectChannelCreateTx, "inspectChannelCreateTx", "", "Prints the configuration contained in the transaction at the specified path")
+	//-outputAnchorPeersUpdate，生成锚节点配置更新文件，需同时指定-asOrg
 	flag.StringVar(&outputAnchorPeersUpdate, "outputAnchorPeersUpdate", "", "[DEPRECATED] Creates a config update to update an anchor peer (works only with the default channel creation, and only for the first update)")
+	//-asOrg，以指定身份执行更新配置交易，如更新锚节点配置信息
 	flag.StringVar(&asOrg, "asOrg", "", "Performs the config generation as a particular organization (by name), only including values in the write set that org (likely) has privilege to set")
+	//-printOrg 将组织的定义打印为JSON
 	flag.StringVar(&printOrg, "printOrg", "", "Prints the definition of an organization as JSON. (useful for adding an org to a channel manually)")
 
 	version := flag.Bool("version", false, "Show version information")
@@ -273,8 +283,10 @@ func main() {
 		}
 
 		if configPath != "" {
+			// 从路径configPath读入配置文件，返回Profile
 			profileConfig = genesisconfig.Load(profile, configPath)
 		} else {
+			// 如果没有路径会根据环境变量FABRIC_CFG_PATH读取配置文件
 			profileConfig = genesisconfig.Load(profile)
 		}
 	}
@@ -298,6 +310,7 @@ func main() {
 	}
 
 	if outputChannelCreateTx != "" {
+		// 生成并输出$(channelID).tx文件
 		if err := doOutputChannelCreateTx(profileConfig, baseProfile, channelID, outputChannelCreateTx); err != nil {
 			logger.Fatalf("Error on outputChannelCreateTx: %s", err)
 		}
