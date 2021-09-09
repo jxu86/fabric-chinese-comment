@@ -22,8 +22,8 @@ type blockStoreProvider interface {
 
 type fileLedgerFactory struct {
 	blkstorageProvider blockStoreProvider
-	ledgers            map[string]blockledger.ReadWriter
-	mutex              sync.Mutex
+	ledgers            map[string]blockledger.ReadWriter // 账本字典，记录通道ID与区块链账本的映射关系，管理所有通道的账本对象(FileLedger)
+	mutex              sync.Mutex                        // 同步锁
 }
 
 // GetOrCreate gets an existing ledger (if it exists) or creates it if it does not

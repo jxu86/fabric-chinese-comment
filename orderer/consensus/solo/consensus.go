@@ -125,6 +125,7 @@ func (ch *chain) main() {
 						continue
 					}
 				}
+				// 把交易分组，每组为一个batch
 				batches, pending := ch.support.BlockCutter().Ordered(msg.normalMsg)
 
 				for _, batch := range batches {
@@ -156,6 +157,7 @@ func (ch *chain) main() {
 						continue
 					}
 				}
+				// 把交易分组，每组为一个batch
 				batch := ch.support.BlockCutter().Cut()
 				if batch != nil {
 					block := ch.support.CreateNextBlock(batch)

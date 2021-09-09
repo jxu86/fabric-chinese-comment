@@ -182,7 +182,7 @@ func (s *server) Deliver(srv ab.AtomicBroadcast_DeliverServer) error {
 		}
 		logger.Debugf("Closing Deliver stream")
 	}()
-
+	// policyChecker策略检查器方法，用于检查消息是否满足ChannelReaders（/Channel/Readers）通道读权限策略
 	policyChecker := func(env *cb.Envelope, channelID string) error {
 		chain := s.GetChain(channelID)
 		if chain == nil {
@@ -193,6 +193,7 @@ func (s *server) Deliver(srv ab.AtomicBroadcast_DeliverServer) error {
 		sf := msgprocessor.NewSigFilter(policies.ChannelReaders, policies.ChannelOrdererReaders, chain)
 		return sf.Apply(env)
 	}
+	// 创建deliverServer类型，Receiver消息追踪器
 	deliverServer := &deliver.Server{
 		PolicyChecker: deliver.PolicyCheckerFunc(policyChecker),
 		Receiver: &deliverMsgTracer{

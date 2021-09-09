@@ -170,12 +170,12 @@ func (h *Handler) Handle(ctx context.Context, srv *Server) error {
 			logger.Warningf("Error reading from %s: %s", addr, err)
 			return err
 		}
-
+		// 从Orderer节点本地指定通道的区块账本中获取请求的区块数据
 		status, err := h.deliverBlocks(ctx, srv, envelope)
 		if err != nil {
 			return err
 		}
-
+		// 发送状态回应
 		err = srv.SendStatusResponse(status)
 		if status != cb.Status_SUCCESS {
 			return err
@@ -198,12 +198,12 @@ func isFiltered(srv *Server) bool {
 
 func (h *Handler) deliverBlocks(ctx context.Context, srv *Server, envelope *cb.Envelope) (status cb.Status, err error) {
 	addr := util.ExtractRemoteAddress(ctx)
-	payload, chdr, shdr, err := h.parseEnvelope(ctx, envelope)
+	payload, chdr, shdr, err := h.parseEnvelope(ctx, envelope) // 解析消息负载payload，检查消息负载头和通道头的合法性
 	if err != nil {
 		logger.Warningf("error parsing envelope from %s: %s", addr, err)
 		return cb.Status_BAD_REQUEST, nil
 	}
-
+	// 从多通道注册管理器字典里获取指定通道（ChainID）的链支持对象
 	chain := h.ChainManager.GetChain(chdr.ChannelId)
 	if chain == nil {
 		// Note, we log this at DEBUG because SDKs will poll waiting for channels to be created
@@ -241,18 +241,18 @@ func (h *Handler) deliverBlocks(ctx context.Context, srv *Server, envelope *cb.E
 		return cb.Status_SERVICE_UNAVAILABLE, nil
 	default:
 	}
-
+	// 构建访问控制对象accessControl，封装一些信息
 	accessControl, err := NewSessionAC(chain, envelope, srv.PolicyChecker, chdr.ChannelId, h.ExpirationCheckFunc)
 	if err != nil {
 		logger.Warningf("[channel: %s] failed to create access control object due to %s", chdr.ChannelId, err)
 		return cb.Status_BAD_REQUEST, nil
 	}
-
+	// 检查当前信息是否满足指定通道的访问权限，检查证书时间是否过期
 	if err := accessControl.Evaluate(); err != nil {
 		logger.Warningf("[channel: %s] Client %s is not authorized: %s", chdr.ChannelId, addr, err)
 		return cb.Status_FORBIDDEN, nil
 	}
-
+	// 区块搜索信息seekInfo，检查请求范围是否合法
 	if seekInfo.Start == nil || seekInfo.Stop == nil {
 		logger.Warningf("[channel: %s] Received seekInfo message from %s with missing start or stop %v, %v", chdr.ChannelId, addr, seekInfo.Start, seekInfo.Stop)
 		return cb.Status_BAD_REQUEST, nil
@@ -296,12 +296,12 @@ func (h *Handler) deliverBlocks(ctx context.Context, srv *Server, envelope *cb.E
 
 		iterCh := make(chan struct{})
 		go func() {
-			block, status = cursor.Next()
+			block, status = cursor.Next() // 获取需要读取区块的游标cursor，会阻塞，等待下一个block的生成
 			close(iterCh)
 		}()
 
 		select {
-		case <-ctx.Done():
+		case <-ctx.Done(): // peer主节点断开连接
 			logger.Debugf("Context canceled, aborting wait for next block")
 			return cb.Status_INTERNAL_SERVER_ERROR, errors.Wrapf(ctx.Err(), "context finished before block retrieved")
 		case <-erroredChan:
@@ -309,7 +309,7 @@ func (h *Handler) deliverBlocks(ctx context.Context, srv *Server, envelope *cb.E
 			// this error, we will need to update this error message, possibly finding a way to signal what error text to return.
 			logger.Warningf("Aborting deliver for request because the backing consensus implementation indicates an error")
 			return cb.Status_SERVICE_UNAVAILABLE, nil
-		case <-iterCh:
+		case <-iterCh: // 检查到有新block
 			// Iterator has set the block and status vars
 		}
 
@@ -320,7 +320,7 @@ func (h *Handler) deliverBlocks(ctx context.Context, srv *Server, envelope *cb.E
 
 		// increment block number to support FAIL_IF_NOT_READY deliver behavior
 		number++
-
+		// 再次检查是否满足访问控制策略
 		if err := accessControl.Evaluate(); err != nil {
 			logger.Warningf("[channel: %s] Client authorization revoked for deliver request from %s: %s", chdr.ChannelId, addr, err)
 			return cb.Status_FORBIDDEN, nil
@@ -329,6 +329,7 @@ func (h *Handler) deliverBlocks(ctx context.Context, srv *Server, envelope *cb.E
 		logger.Debugf("[channel: %s] Delivering block [%d] for (%p) for %s", chdr.ChannelId, block.Header.Number, seekInfo, addr)
 
 		signedData := &protoutil.SignedData{Data: envelope.Payload, Identity: shdr.Creator, Signature: envelope.Signature}
+		// 发送区块数据
 		if err := srv.SendBlockResponse(block, chdr.ChannelId, chain, signedData); err != nil {
 			logger.Warningf("[channel: %s] Error sending to %s: %s", chdr.ChannelId, addr, err)
 			return cb.Status_INTERNAL_SERVER_ERROR, err
