@@ -44,6 +44,7 @@ func serializeBlock(block *common.Block) ([]byte, *serializedBlockInfo, error) {
 	return buf.Bytes(), info, nil
 }
 
+// serializedBlockBytes to struct Block
 func deserializeBlock(serializedBlockBytes []byte) (*common.Block, error) {
 	block := &common.Block{}
 	var err error

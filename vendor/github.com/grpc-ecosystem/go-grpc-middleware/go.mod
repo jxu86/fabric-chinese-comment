@@ -1,5 +1,7 @@
 module github.com/grpc-ecosystem/go-grpc-middleware
 
+go 1.14
+
 require (
 	github.com/gogo/protobuf v1.2.1
 	github.com/golang/protobuf v1.3.2

@@ -66,30 +66,33 @@ func NewReceiverImpl(channelID string, sharedConfigFetcher OrdererConfigFetcher,
 //   - impossible
 //
 // Note that messageBatches can not be greater than 2.
+// messageBatches的长度<=2
 func (r *receiver) Ordered(msg *cb.Envelope) (messageBatches [][]*cb.Envelope, pending bool) {
-	if len(r.pendingBatch) == 0 {
+	if len(r.pendingBatch) == 0 { // 判断当前批次是否为空，如果为空标记区块形成时间
 		// We are beginning a new batch, mark the time
 		r.PendingBatchStartTime = time.Now()
 	}
-
+	// 获取order配置，主要是获取BatchTimeout，MaxMessageCount， AbsoluteMaxBytes等上述三个参数用于判定形成区块的规则
 	ordererConfig, ok := r.sharedConfigFetcher.OrdererConfig()
 	if !ok {
 		logger.Panicf("Could not retrieve orderer config to query batch parameters, block cutting is not possible")
 	}
 
 	batchSize := ordererConfig.BatchSize()
-
+	// 获取当前消息大小
 	messageSizeBytes := messageSizeBytes(msg)
-	if messageSizeBytes > batchSize.PreferredMaxBytes {
+	if messageSizeBytes > batchSize.PreferredMaxBytes { //当当前消息大于PreferredMaxBytes时，直接Cut形成区块Batch
 		logger.Debugf("The current message, with %v bytes, is larger than the preferred batch size of %v bytes and will be isolated.", messageSizeBytes, batchSize.PreferredMaxBytes)
 
 		// cut pending batch, if it has any messages
+		// 该条件就是最多形成2个区块Batch的代码
 		if len(r.pendingBatch) > 0 {
 			messageBatch := r.Cut()
 			messageBatches = append(messageBatches, messageBatch)
 		}
 
 		// create new batch with single message
+		// 创建一个新的Batch只有该消息（大于PreferredMaxBytes值）
 		messageBatches = append(messageBatches, []*cb.Envelope{msg})
 
 		// Record that this batch took no time to fill
@@ -97,9 +100,9 @@ func (r *receiver) Ordered(msg *cb.Envelope) (messageBatches [][]*cb.Envelope, p
 
 		return
 	}
-
+	// 当消息不大于PreferredMaxBytes时，判断消息该消息与之前的消息大小是否大于PreferredMaxBytes
 	messageWillOverflowBatchSizeBytes := r.pendingBatchSizeBytes+messageSizeBytes > batchSize.PreferredMaxBytes
-
+	// 如果大于2MB(默认)则形成区块
 	if messageWillOverflowBatchSizeBytes {
 		logger.Debugf("The current message, with %v bytes, will overflow the pending batch of %v bytes.", messageSizeBytes, r.pendingBatchSizeBytes)
 		logger.Debugf("Pending batch would overflow if current message is added, cutting batch now.")
@@ -112,7 +115,7 @@ func (r *receiver) Ordered(msg *cb.Envelope) (messageBatches [][]*cb.Envelope, p
 	r.pendingBatch = append(r.pendingBatch, msg)
 	r.pendingBatchSizeBytes += messageSizeBytes
 	pending = true
-
+	// 判断Batch消息是否大于MaxMessageCount，如果是则形成区块Batch
 	if uint32(len(r.pendingBatch)) >= batchSize.MaxMessageCount {
 		logger.Debugf("Batch size met, cutting batch")
 		messageBatch := r.Cut()

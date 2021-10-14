@@ -134,10 +134,10 @@ func (ch *chain) main() {
 				}
 
 				switch {
-				case timer != nil && !pending:
+				case timer != nil && !pending: // 如果计时开始但缓冲区没数据，把计时关掉
 					// Timer is already running but there are no messages pending, stop the timer
 					timer = nil
-				case timer == nil && pending:
+				case timer == nil && pending: // 如果计时没开始但缓冲区有数据，开始计时
 					// Timer is not already running and there are messages pending, so start it
 					timer = time.After(ch.support.SharedConfig().BatchTimeout())
 					logger.Debugf("Just began %s batch timer", ch.support.SharedConfig().BatchTimeout().String())

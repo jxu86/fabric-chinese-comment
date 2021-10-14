@@ -66,16 +66,16 @@ func (i *fileLedgerIterator) Close() {
 func (fl *FileLedger) Iterator(startPosition *ab.SeekPosition) (blockledger.Iterator, uint64) {
 	var startingBlockNumber uint64
 	switch start := startPosition.Type.(type) {
-	case *ab.SeekPosition_Oldest:
+	case *ab.SeekPosition_Oldest: // 从第一个block开始
 		startingBlockNumber = 0
-	case *ab.SeekPosition_Newest:
+	case *ab.SeekPosition_Newest: // 获取最新的block
 		info, err := fl.blockStore.GetBlockchainInfo()
 		if err != nil {
 			logger.Panic(err)
 		}
 		newestBlockNumber := info.Height - 1
 		startingBlockNumber = newestBlockNumber
-	case *ab.SeekPosition_Specified:
+	case *ab.SeekPosition_Specified: // 从某个
 		startingBlockNumber = start.Specified.Number
 		height := fl.Height()
 		if startingBlockNumber > height {

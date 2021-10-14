@@ -76,7 +76,7 @@ func Main() {
 		fmt.Println(metadata.GetVersionInfo())
 		return
 	}
-	// load 配置文件
+	// load配置文件，默认是orderer.yaml，返回TopLevel结构体
 	conf, err := localconfig.Load()
 	if err != nil {
 		logger.Error("failed to parse config: ", err)
