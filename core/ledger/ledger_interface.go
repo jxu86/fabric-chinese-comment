@@ -130,10 +130,13 @@ type SnapshotsConfig struct {
 }
 
 // PeerLedgerProvider provides handle to ledger instances
+// 用于管理账本
 type PeerLedgerProvider interface {
 	// Create creates a new ledger with the given genesis block.
 	// This function guarantees that the creation of ledger and committing the genesis block would an atomic action
 	// The chain id retrieved from the genesis block is treated as a ledger id
+	// Create方法创建一个新账本，参数为创始块。创建账本&提交创世块这两个操作是原子的。
+	// 创世块其实是一个配置信息块，包含Configure Transaction，具体可看configtxgen
 	Create(genesisBlock *common.Block) (PeerLedger, error)
 	// Open opens an already created ledger
 	Open(ledgerID string) (PeerLedger, error)

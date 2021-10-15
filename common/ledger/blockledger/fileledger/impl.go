@@ -43,6 +43,7 @@ type fileLedgerIterator struct {
 
 // Next blocks until there is a new block available, or until Close is called.
 // It returns an error if the next block is no longer retrievable.
+// 获取下一个可用的块，如果没有可用的块则阻止
 func (i *fileLedgerIterator) Next() (*cb.Block, cb.Status) {
 	result, err := i.commonIterator.Next()
 	if err != nil {
@@ -63,6 +64,7 @@ func (i *fileLedgerIterator) Close() {
 
 // Iterator returns an Iterator, as specified by an ab.SeekInfo message, and its
 // starting block number
+// 按起始块号获取迭代器
 func (fl *FileLedger) Iterator(startPosition *ab.SeekPosition) (blockledger.Iterator, uint64) {
 	var startingBlockNumber uint64
 	switch start := startPosition.Type.(type) {
@@ -94,6 +96,7 @@ func (fl *FileLedger) Iterator(startPosition *ab.SeekPosition) (blockledger.Iter
 }
 
 // Height returns the number of blocks on the ledger
+// 获取ledger高度（即块数）
 func (fl *FileLedger) Height() uint64 {
 	info, err := fl.blockStore.GetBlockchainInfo()
 	if err != nil {
@@ -103,6 +106,7 @@ func (fl *FileLedger) Height() uint64 {
 }
 
 // Append a new block to the ledger
+// ledger向追加新块
 func (fl *FileLedger) Append(block *cb.Block) error {
 	err := fl.blockStore.AddBlock(block)
 	if err == nil {

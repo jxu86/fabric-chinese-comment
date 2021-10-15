@@ -27,6 +27,7 @@ type fileLedgerFactory struct {
 }
 
 // GetOrCreate gets an existing ledger (if it exists) or creates it if it does not
+// 从ledgers中查找，如找到则返回，否则创建Ledger（即blkstorage）并构造fileLedger
 func (flf *fileLedgerFactory) GetOrCreate(chainID string) (blockledger.ReadWriter, error) {
 	flf.mutex.Lock()
 	defer flf.mutex.Unlock()
@@ -48,6 +49,7 @@ func (flf *fileLedgerFactory) GetOrCreate(chainID string) (blockledger.ReadWrite
 }
 
 // ChannelIDs returns the channel IDs the factory is aware of
+// 获取已存在的Ledger列表，调取flf.blkstorageProvider.List()
 func (flf *fileLedgerFactory) ChannelIDs() []string {
 	channelIDs, err := flf.blkstorageProvider.List()
 	if err != nil {
@@ -57,6 +59,7 @@ func (flf *fileLedgerFactory) ChannelIDs() []string {
 }
 
 // Close releases all resources acquired by the factory
+// 关闭并释放资源flf.blkstorageProvider.Close()
 func (flf *fileLedgerFactory) Close() {
 	flf.blkstorageProvider.Close()
 }

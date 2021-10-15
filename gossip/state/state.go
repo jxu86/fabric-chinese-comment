@@ -573,6 +573,7 @@ func (s *GossipStateProviderImpl) deliverPayloads() {
 						continue
 					}
 				}
+				// 写入区块
 				if err := s.commitBlock(rawBlock, p); err != nil {
 					if executionErr, isExecutionErr := err.(*vsccErrors.VSCCExecutionFailureError); isExecutionErr {
 						s.logger.Errorf("Failed executing VSCC due to %v. Aborting chain processing", executionErr)
